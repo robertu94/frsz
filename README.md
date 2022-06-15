@@ -1,0 +1,1 @@
+Fixed Rate SZ prototype
