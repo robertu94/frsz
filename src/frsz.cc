@@ -48,9 +48,6 @@ public:
   int compress_impl(const pressio_data* input,
                     struct pressio_data* output) override
   {
-    if(input->num_dimensions() != 1) {
-      return set_error(1, "unsupported dimensions: currently only 1d supported");
-    }
 
     switch(input->dtype()) {
       case pressio_float_dtype:
@@ -67,11 +64,6 @@ public:
   int decompress_impl(const pressio_data* input,
                       struct pressio_data* output) override
   {
-
-    if(output->num_dimensions() != 1) {
-      return set_error(1, "unsupported dimensions: currently only 1d supported");
-    }
-
     switch(output->dtype()) {
       case pressio_float_dtype:
         return decompress_1d<float>(input, output);
@@ -112,8 +104,8 @@ private:
 
   template <class T, size_t BLOCK=256>
   int compress_1d(pressio_data const* input, pressio_data* output) {
-    auto quant_mem = pressio_data::owning(input->dtype(), input->dimensions());
-    const size_t len = input->get_dimension(0);
+    auto quant_mem = pressio_data::owning(input->dtype(), {input->num_elements()});
+    const size_t len = input->normalized_dims(1).at(0);
     const size_t output_size_in_bytes = len*sizeof(uint16_t);
     if(output->capacity_in_bytes() < output_size_in_bytes) {
       *output = pressio_data::owning(pressio_byte_dtype, {output_size_in_bytes});
@@ -144,7 +136,7 @@ private:
 
   template <class T, size_t BLOCK=256>
   int decompress_1d(pressio_data const* input, pressio_data* output) {
-    const size_t len = output->get_dimension(0);
+    const size_t len = output->normalized_dims(1).at(0);
     int16_t* quantized = static_cast<int16_t*>(input->data());
     T* output_data = static_cast<T*>(output->data());
     const double ebx2 = epsilon * 2;
