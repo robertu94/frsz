@@ -60,7 +60,7 @@ add_library(frsz
   ./include/frsz.h
   )
 target_link_libraries(frsz PRIVATE LibPressio::libpressio OpenMP::OpenMP_CXX)
-target_compile_features(frsz PUBLIC cxx_std_17)
+target_compile_features(frsz PUBLIC cxx_std_20)
 target_include_directories(frsz 
   PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> 
