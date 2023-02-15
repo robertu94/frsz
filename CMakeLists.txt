@@ -1,6 +1,6 @@
 ## template for a CMake C++ Library
 cmake_minimum_required(VERSION 3.14)
-project(frsz VERSION "0.0.2" LANGUAGES CXX)
+project(frsz VERSION "0.0.3" LANGUAGES CXX)
 
 #correct was to set a default build type
 # https://blog.kitware.com/cmake-and-the-default-build-type/
@@ -57,10 +57,11 @@ find_package(OpenMP REQUIRED)
 
 add_library(frsz
   ./src/frsz.cc
+  ./src/frsz2.cc
   ./include/frsz.h
   )
 target_link_libraries(frsz PRIVATE LibPressio::libpressio OpenMP::OpenMP_CXX)
-target_compile_features(frsz PUBLIC cxx_std_17)
+target_compile_features(frsz PUBLIC cxx_std_20)
 target_include_directories(frsz 
   PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> 
