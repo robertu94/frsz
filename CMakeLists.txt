@@ -57,6 +57,7 @@ find_package(OpenMP REQUIRED)
 
 add_library(frsz
   ./src/frsz.cc
+  ./src/frsz2.cc
   ./include/frsz.h
   )
 target_link_libraries(frsz PRIVATE LibPressio::libpressio OpenMP::OpenMP_CXX)
