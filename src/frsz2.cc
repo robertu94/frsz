@@ -148,27 +148,41 @@ public:
 
 #define dispatch_case(func, bits)                                                                            \
   case bits:                                                                                                 \
-    return func<bits, T, ExpType>(data, total_elements, compressed);
+    return func<bits, T, ExpType>(data, total_elements, compressed)
 
   template<class T>
   int dispatch_compress(T* data, uint64_t total_elements, uint8_t* compressed)
   {
     using ExpType = int8_t;
     switch (bits) {
-      dispatch_case(compress_impl_typed, 8) dispatch_case(compress_impl_typed, 9)
-        dispatch_case(compress_impl_typed, 10) dispatch_case(compress_impl_typed, 11)
-          dispatch_case(compress_impl_typed, 12) dispatch_case(compress_impl_typed, 13)
-            dispatch_case(compress_impl_typed, 14) dispatch_case(compress_impl_typed, 15)
-              dispatch_case(compress_impl_typed, 16) dispatch_case(compress_impl_typed, 17)
-                dispatch_case(compress_impl_typed, 18) dispatch_case(compress_impl_typed, 19)
-                  dispatch_case(compress_impl_typed, 20) dispatch_case(compress_impl_typed, 21)
-                    dispatch_case(compress_impl_typed, 22) dispatch_case(compress_impl_typed, 23)
-                      dispatch_case(compress_impl_typed, 24) dispatch_case(compress_impl_typed, 25)
-                        dispatch_case(compress_impl_typed, 26) dispatch_case(compress_impl_typed, 27)
-                          dispatch_case(compress_impl_typed, 28) dispatch_case(compress_impl_typed, 29)
-                            dispatch_case(compress_impl_typed, 30) dispatch_case(compress_impl_typed, 31)
-                              dispatch_case(compress_impl_typed, 32) default
-        : throw std::runtime_error("unsupported number of bits: " + std::to_string(bits));
+      dispatch_case(compress_impl_typed, 8);
+      dispatch_case(compress_impl_typed, 9);
+      dispatch_case(compress_impl_typed, 10);
+      ;
+      dispatch_case(compress_impl_typed, 11);
+      dispatch_case(compress_impl_typed, 12);
+      dispatch_case(compress_impl_typed, 13);
+      dispatch_case(compress_impl_typed, 14);
+      dispatch_case(compress_impl_typed, 15);
+      dispatch_case(compress_impl_typed, 16);
+      dispatch_case(compress_impl_typed, 17);
+      dispatch_case(compress_impl_typed, 18);
+      dispatch_case(compress_impl_typed, 19);
+      dispatch_case(compress_impl_typed, 20);
+      dispatch_case(compress_impl_typed, 21);
+      dispatch_case(compress_impl_typed, 22);
+      dispatch_case(compress_impl_typed, 23);
+      dispatch_case(compress_impl_typed, 24);
+      dispatch_case(compress_impl_typed, 25);
+      dispatch_case(compress_impl_typed, 26);
+      dispatch_case(compress_impl_typed, 27);
+      dispatch_case(compress_impl_typed, 28);
+      dispatch_case(compress_impl_typed, 29);
+      dispatch_case(compress_impl_typed, 30);
+      dispatch_case(compress_impl_typed, 31);
+      dispatch_case(compress_impl_typed, 32);
+      default:
+        throw std::runtime_error("unsupported number of bits: " + std::to_string(bits));
     }
   }
   template<class T>
@@ -176,20 +190,33 @@ public:
   {
     using ExpType = int8_t;
     switch (bits) {
-      dispatch_case(decompress_impl_typed, 8) dispatch_case(decompress_impl_typed, 9)
-        dispatch_case(decompress_impl_typed, 10) dispatch_case(decompress_impl_typed, 11)
-          dispatch_case(decompress_impl_typed, 12) dispatch_case(decompress_impl_typed, 13)
-            dispatch_case(decompress_impl_typed, 14) dispatch_case(decompress_impl_typed, 15)
-              dispatch_case(decompress_impl_typed, 16) dispatch_case(decompress_impl_typed, 17)
-                dispatch_case(decompress_impl_typed, 18) dispatch_case(decompress_impl_typed, 19)
-                  dispatch_case(decompress_impl_typed, 20) dispatch_case(decompress_impl_typed, 21)
-                    dispatch_case(decompress_impl_typed, 22) dispatch_case(decompress_impl_typed, 23)
-                      dispatch_case(decompress_impl_typed, 24) dispatch_case(decompress_impl_typed, 25)
-                        dispatch_case(decompress_impl_typed, 26) dispatch_case(decompress_impl_typed, 27)
-                          dispatch_case(decompress_impl_typed, 28) dispatch_case(decompress_impl_typed, 29)
-                            dispatch_case(decompress_impl_typed, 30) dispatch_case(decompress_impl_typed, 31)
-                              dispatch_case(decompress_impl_typed, 32) default
-        : throw std::runtime_error("unsupported number of bits: " + std::to_string(bits));
+      dispatch_case(decompress_impl_typed, 8);
+      dispatch_case(decompress_impl_typed, 9);
+      dispatch_case(decompress_impl_typed, 10);
+      dispatch_case(decompress_impl_typed, 11);
+      dispatch_case(decompress_impl_typed, 12);
+      dispatch_case(decompress_impl_typed, 13);
+      dispatch_case(decompress_impl_typed, 14);
+      dispatch_case(decompress_impl_typed, 15);
+      dispatch_case(decompress_impl_typed, 16);
+      dispatch_case(decompress_impl_typed, 17);
+      dispatch_case(decompress_impl_typed, 18);
+      dispatch_case(decompress_impl_typed, 19);
+      dispatch_case(decompress_impl_typed, 20);
+      dispatch_case(decompress_impl_typed, 21);
+      dispatch_case(decompress_impl_typed, 22);
+      dispatch_case(decompress_impl_typed, 23);
+      dispatch_case(decompress_impl_typed, 24);
+      dispatch_case(decompress_impl_typed, 25);
+      dispatch_case(decompress_impl_typed, 26);
+      dispatch_case(decompress_impl_typed, 27);
+      dispatch_case(decompress_impl_typed, 28);
+      dispatch_case(decompress_impl_typed, 29);
+      dispatch_case(decompress_impl_typed, 30);
+      dispatch_case(decompress_impl_typed, 31);
+      dispatch_case(decompress_impl_typed, 32);
+      default:
+        throw std::runtime_error("unsupported number of bits: " + std::to_string(bits));
     }
   }
 
