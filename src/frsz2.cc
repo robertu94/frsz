@@ -137,7 +137,11 @@ namespace fp {
         if(-float_traits<T>::significand_bits > shift) {
             r = 0;
         } else {
-            r = m<<shift;
+            if(shift > 0) {
+                r = m<<shift;
+            } else {
+                r = m>>(-shift);
+            }
         }
         if(s) {
             r |= 1ull<<(sizeof(T)*8 -1);
@@ -153,7 +157,13 @@ namespace fp {
 
         auto s = fixed & 1ull<<(sizeof(T)*8 - 1);
         auto e = static_cast<uint64_t>(shift + block_exponent + ebias<F>) << float_traits<F>::significand_bits;
-        auto m = f >> (float_traits<F>::exponent_bits - 1 + shift);
+        auto mantissa_shift = (float_traits<F>::exponent_bits - 1 + shift);
+        scaled_t<F> m;
+        if(mantissa_shift > 0) {
+            m = f >> mantissa_shift;
+        } else {
+            m = f << (-mantissa_shift);
+        }
         m = m & (~(scaled_t<T>(1)<<float_traits<F>::significand_bits)); //unset the implicit bit
         scaled_t<T> r = s | e | m;
         return std::bit_cast<F>(r);
