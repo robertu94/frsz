@@ -3,7 +3,11 @@
 #include "libpressio_ext/cpp/options.h"
 #include "libpressio_ext/cpp/pressio.h"
 #include "std_compat/memory.h"
+#include <bit>
 #include <cmath>
+#include <cstring>
+#include <limits>
+#include <type_traits>
 
 #define runtime_assert(msg, ...)                                                                             \
   if (!(__VA_ARGS__))                                                                                        \
@@ -11,6 +15,21 @@
 
 namespace libpressio {
 namespace frsz2_ns {
+namespace xstd {
+
+template<class To, class From>
+std::enable_if_t<sizeof(To) == sizeof(From) && std::is_trivially_copyable_v<From> &&
+                   std::is_trivially_copyable_v<To>,
+                 To>
+bit_cast(const From& src) noexcept
+{
+  static_assert(std::is_trivially_constructible_v<To>, "Type To must be trivially constructable!");
+  To dest;
+  std::memcpy(&dest, &src, sizeof(From));
+  return dest;
+}
+
+}
 
 template<class T>
 using scaled_t = std::conditional_t<
@@ -73,103 +92,118 @@ struct ones_t<int64_t>
 };
 
 namespace fp {
-    template <class T>
-    struct float_traits {
-    };
-    template <>
-    struct float_traits<float> {
-        using sign_t = bool;
-        using mantissa_t = int8_t;
-        using significand_t = uint32_t;
-        constexpr static int64_t sign_bits = 1;
-        constexpr static int64_t exponent_bits = 8;
-        constexpr static int64_t significand_bits = 23;
-        
-    };
-    template <>
-    struct float_traits<double> {
-        using sign_t = bool;
-        using mantissa_t = int16_t;
-        using significand_t = uint64_t;
-        constexpr static int64_t sign_bits = 1;
-        constexpr static int64_t exponent_bits = 11;
-        constexpr static int64_t significand_bits = 52;
-    };
+template<class T>
+struct float_traits
+{};
+template<>
+struct float_traits<float>
+{
+  using sign_t = bool;
+  using mantissa_t = int8_t;
+  using significand_t = uint32_t;
+  constexpr static int64_t sign_bits = 1;
+  constexpr static int64_t exponent_bits = 8;
+  constexpr static int64_t significand_bits = 23;
+};
+template<>
+struct float_traits<double>
+{
+  using sign_t = bool;
+  using mantissa_t = int16_t;
+  using significand_t = uint64_t;
+  constexpr static int64_t sign_bits = 1;
+  constexpr static int64_t exponent_bits = 11;
+  constexpr static int64_t significand_bits = 52;
+};
 
-    template <class T>
-    typename float_traits<T>::mantissa_t exponent(T f) {
-        constexpr size_t mantissa_shift = float_traits<T>::significand_bits + float_traits<T>::sign_bits;  
-        return (std::bit_cast<scaled_t<T>>(f)>>float_traits<T>::significand_bits & (ones_t<scaled_t<T>>::value >> mantissa_shift)) - ebias<T>;
-    }
-    template <class T>
-    typename float_traits<T>::significand_t significand(T f) {
-        scaled_t<T> s = std::bit_cast<scaled_t<T>>(f) & (ones_t<scaled_t<T>>::value >> (sizeof(T)*8 -float_traits<T>::significand_bits));
-        if(!(exponent(f) == -ebias<T>)) {
-            //is not subnormal, add leading 1 bit
-            s |= 1ull<<float_traits<T>::significand_bits;
-        }
-        return s;
-    }
-    template <class T>
-    typename float_traits<T>::sign_t sign(T f) {
-        return (std::bit_cast<scaled_t<T>>(f) & (1ull<<(8*sizeof(T)-1)));
-    }
-    inline constexpr bool positive = false;
-    inline constexpr bool negative = true;
+template<class T>
+typename float_traits<T>::mantissa_t
+exponent(T f)
+{
+  constexpr size_t mantissa_shift = float_traits<T>::significand_bits + float_traits<T>::sign_bits;
+  return (xstd::bit_cast<scaled_t<T>>(f) >> float_traits<T>::significand_bits &
+          (ones_t<scaled_t<T>>::value >> mantissa_shift)) -
+         ebias<T>;
+}
+template<class T>
+typename float_traits<T>::significand_t
+significand(T f)
+{
+  scaled_t<T> s = xstd::bit_cast<scaled_t<T>>(f) &
+                  (ones_t<scaled_t<T>>::value >> (sizeof(T) * 8 - float_traits<T>::significand_bits));
+  if (!(exponent(f) == -ebias<T>)) {
+    // is not subnormal, add leading 1 bit
+    s |= 1ull << float_traits<T>::significand_bits;
+  }
+  return s;
+}
+template<class T>
+typename float_traits<T>::sign_t
+sign(T f)
+{
+  return (xstd::bit_cast<scaled_t<T>>(f) & (1ull << (8 * sizeof(T) - 1)));
+}
+inline constexpr bool positive = false;
+inline constexpr bool negative = true;
 
-    template <class T>
-    int16_t is_normal(T f) {
-        if(!(exponent(f) == -ebias<T>)) {
-            return 1;
-        }
-        return 0;
-    }
-
-    template <class T>
-    scaled_t<T> floating_to_fixed(T floating, int16_t block_exponent) {
-        auto s = sign(floating);
-        auto e = exponent(floating);
-        auto m = significand(floating);
-
-        assert(block_exponent >= e);
-        auto shift = (float_traits<T>::exponent_bits - 1 - (block_exponent - e));
-        scaled_t<T> r;
-        if(-float_traits<T>::significand_bits > shift) {
-            r = 0;
-        } else {
-            if(shift > 0) {
-                r = m<<shift;
-            } else {
-                r = m>>(-shift);
-            }
-        }
-        if(s) {
-            r |= 1ull<<(sizeof(T)*8 -1);
-        }
-        return r;
-    }
-    template<class F, class T>
-    F fixed_to_floating(T fixed, int16_t block_exponent){
-        static_assert(sizeof(T) == sizeof(F));
-        auto f = fixed & (ones_t<T>::value >> 1);
-        auto z = std::countl_zero(f) - 1; //number of zeros after the sign bit
-        auto shift = - std::min(z, block_exponent + ebias<F>);
-
-        auto s = fixed & 1ull<<(sizeof(T)*8 - 1);
-        auto e = static_cast<uint64_t>(shift + block_exponent + ebias<F>) << float_traits<F>::significand_bits;
-        auto mantissa_shift = (float_traits<F>::exponent_bits - 1 + shift);
-        scaled_t<F> m;
-        if(mantissa_shift > 0) {
-            m = f >> mantissa_shift;
-        } else {
-            m = f << (-mantissa_shift);
-        }
-        m = m & (~(scaled_t<T>(1)<<float_traits<F>::significand_bits)); //unset the implicit bit
-        scaled_t<T> r = s | e | m;
-        return std::bit_cast<F>(r);
-    }
+template<class T>
+int16_t
+is_normal(T f)
+{
+  if (!(exponent(f) == -ebias<T>)) {
+    return 1;
+  }
+  return 0;
 }
 
+template<class T>
+scaled_t<T>
+floating_to_fixed(T floating, int16_t block_exponent)
+{
+  auto s = sign(floating);
+  auto e = exponent(floating);
+  auto m = significand(floating);
+
+  assert(block_exponent >= e);
+  auto shift = (float_traits<T>::exponent_bits - 1 - (block_exponent - e));
+  scaled_t<T> r;
+  if (-float_traits<T>::significand_bits > shift) {
+    r = 0;
+  } else {
+    if (shift > 0) {
+      r = m << shift;
+    } else {
+      r = m >> (-shift);
+    }
+  }
+  if (s) {
+    r |= 1ull << (sizeof(T) * 8 - 1);
+  }
+  return r;
+}
+template<class F, class T>
+F
+fixed_to_floating(T fixed, int16_t block_exponent)
+{
+  static_assert(sizeof(T) == sizeof(F));
+  auto f = fixed & (ones_t<T>::value >> 1);
+  auto z = std::countl_zero(f) - 1; // number of zeros after the sign bit
+  auto shift = -std::min(z, block_exponent + ebias<F>);
+
+  auto s = fixed & 1ull << (sizeof(T) * 8 - 1);
+  auto e = static_cast<uint64_t>(shift + block_exponent + ebias<F>) << float_traits<F>::significand_bits;
+  auto mantissa_shift = (float_traits<F>::exponent_bits - 1 + shift);
+  scaled_t<F> m;
+  if (mantissa_shift > 0) {
+    m = f >> mantissa_shift;
+  } else {
+    m = f << (-mantissa_shift);
+  }
+  m = m & (~(scaled_t<T>(1) << float_traits<F>::significand_bits)); // unset the implicit bit
+  scaled_t<T> r = s | e | m;
+  return xstd::bit_cast<F>(r);
+}
+}
 
 constexpr int
 ceildiv(int a, int b)
@@ -179,7 +213,6 @@ ceildiv(int a, int b)
   else
     return a / b + 1;
 }
-
 
 /**
  * \param[in] in pointer to the byte containing the bytes to shift
@@ -206,8 +239,6 @@ shift_left(InputType const* in, uint8_t bits, uint8_t offset)
   }
   return result;
 }
-
-
 
 class frsz2_compressor_plugin : public libpressio_compressor_plugin
 {
@@ -253,7 +284,7 @@ public:
 
   int dispatch_float_compress(float* data, uint64_t total_elements, uint8_t* compressed)
   {
-    using T=float;
+    using T = float;
     using ExpType = int16_t;
     switch (bits) {
       dispatch_case(compress_impl_typed, 8);
@@ -287,7 +318,7 @@ public:
   }
   int dispatch_double_compress(double* data, uint64_t total_elements, uint8_t* compressed)
   {
-    using T=double;
+    using T = double;
     using ExpType = int16_t;
     switch (bits) {
       dispatch_case(compress_impl_typed, 8);
@@ -562,7 +593,6 @@ public:
         in_max = std::max(in_max, std::fabs(data[i + exp_block_data_offset]));
       }
       ExpType max_exp = fp::exponent(in_max);
-
 
       // preform the scaling
       std::vector<scaled_t<T>> exp_block_scaled(max_exp_block_size);
