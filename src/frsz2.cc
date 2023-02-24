@@ -516,9 +516,10 @@ public:
         size_t output_byte_offset = sizeof(ExpType) + work_block_id * work_block_bytes;
         for (size_t i = 0; i < work_block_elements; ++i) {
           InputType tmp[2] = { 0, 0 };
-          uint16_t copy_size =
+          const uint16_t copy_size =
             (bits + output_bit_offset > 8 * sizeof(InputType)) ? 2 * sizeof(InputType) : sizeof(InputType);
-          memcpy(tmp, exp_block_compressed + output_byte_offset, copy_size);
+          const uint16_t safe_copy_size = std::min<uint16_t>(exp_block_bytes-output_byte_offset, copy_size);
+          memcpy(tmp, exp_block_compressed + output_byte_offset, safe_copy_size);
           exp_block_scaled[i + work_block_id * max_work_block_size] =
             shift_left<OutputType>(tmp, bits, output_bit_offset);
 
@@ -591,9 +592,11 @@ public:
           // we do this dance to avoid an unaligned load
           uint8_t* const out = exp_block_compressed + output_byte_offset;
           uint8_t const copy_size =
-            (bits + output_bit_offset > 8 * sizeof(OutputType)) ? 2 * sizeof(OutputType) : sizeof(OutputType);
+            ((bits + output_bit_offset > 8 * sizeof(OutputType)) ? 2 * sizeof(OutputType) : sizeof(OutputType));
+          uint8_t const safe_copy_size = std::min<uint8_t>(copy_size, exp_block_bytes-output_byte_offset);
           OutputType temp[2] = { 0, 0 };
-          memcpy(temp, out, copy_size);
+
+          memcpy(temp, out, safe_copy_size);
 
           // write everything from offset to output_type boundary
           uint8_t first_output_shift;
@@ -623,7 +626,7 @@ public:
           }
 
           // copy it back to avoid an unaligned store
-          memcpy(out, temp, copy_size);
+          memcpy(out, temp, safe_copy_size);
 
           output_byte_offset += (bits + output_bit_offset) / 8;
           output_bit_offset = (output_bit_offset + bits) % 8;
