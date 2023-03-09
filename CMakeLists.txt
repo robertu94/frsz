@@ -17,6 +17,7 @@ set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeR
 include(CTest)
 include(GNUInstallDirs)
 include(CheckCXXCompilerFlag)
+include(CMakeDependentOption)
 
 #compiler flags and standard conformance checks
 check_cxx_compiler_flag("-fno-omit-frame-pointer" HAVE_NO_OMIT_FRAME_POINTER)
@@ -118,6 +119,15 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/include/frsz_version.h
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/frsz)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/frsz.pc DESTINATION ${CMAKE_INSTALL_PREFIX}/share/pkgconfig)
 
+
+cmake_dependent_option(
+    BUILD_CUDA_TESTING
+    "Build the CUDA tests (requires BUILD_TESTING=ON to have an effect)" OFF
+    "BUILD_TESTING" OFF
+)
+if (BUILD_CUDA_TESTING)
+    enable_language(CUDA)
+endif()
 
 if(BUILD_TESTING)
   add_subdirectory(test)
