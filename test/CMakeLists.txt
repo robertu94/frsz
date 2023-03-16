@@ -41,6 +41,7 @@ if (BUILD_CUDA_TESTING)
     )
     target_compile_options(${test_name} PRIVATE 
         --expt-extended-lambda
+        --expt-relaxed-constexpr # TODO remove this and implement missing functions
         )
     target_compile_features(${test_name} PRIVATE cxx_std_14 cuda_std_14)
     # For now, ensure that C++14 is used without extensions.

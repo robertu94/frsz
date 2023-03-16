@@ -1,7 +1,7 @@
 #include "gtest/gtest.h"
 
 #include <cassert>
-#include <cinttypes>
+#include <cstdint>
 #include <functional>
 #include <initializer_list>
 #include <iomanip>
@@ -30,7 +30,7 @@ struct bit_cast_from_to
 public:
   void __device__ __host__ operator()(int idx, const From* from, To* to) const
   {
-    to[idx] = frsz::bit_cast<To>(from[idx]);
+    to[idx] = frsz::xstd::bit_cast<To>(from[idx]);
   }
 };
 
@@ -71,20 +71,19 @@ perform_bit_cast_tests(const std::vector<IType>& expected_i, const std::vector<F
   ASSERT_EQ(expected_i.size(), num_elems);
   Memory<IType> i_mem(expected_i);
   Memory<FType> f_mem(expected_f.size(), {});
-  bool result = compare_kernel<1, num_elems>(bit_cast_from_to<IType, FType>{}, i_mem, f_mem);
-  f_mem.to_host();
-  result = compare_vectors(f_mem.get_host_vector(), expected_f);
-  ASSERT_TRUE(result);
-  result = compare_kernel<1, num_elems>(bit_cast_from_to<FType, IType>{}, f_mem, i_mem);
-  i_mem.to_host();
-  ASSERT_TRUE(result);
-  result = compare_vectors(i_mem.get_host_vector(), expected_i);
-  ASSERT_TRUE(result);
+  bool i_to_f_devices = compare_kernel<1, num_elems>(bit_cast_from_to<IType, FType>{}, i_mem, f_mem);
+  EXPECT_TRUE(i_to_f_devices);
+  auto cmp_f = compare_vectors(f_mem.get_host_vector(), expected_f);
+  EXPECT_TRUE(cmp_f);
+  auto f_to_i_devices = compare_kernel<1, num_elems>(bit_cast_from_to<FType, IType>{}, f_mem, i_mem);
+  EXPECT_TRUE(f_to_i_devices);
+  auto cmp_i = compare_vectors(i_mem.get_host_vector(), expected_i);
+  EXPECT_TRUE(cmp_i);
 }
 
 TEST(frsz2_gpu, TestBitCast32)
 {
-  using ftype = float;
+  using f_type = float;
   using i_type = std::int32_t;
   using ui_type = std::uint32_t;
   std::vector<ui_type> expected_ui({ 0b0'01111111'01000000000000000000000,
@@ -104,14 +103,14 @@ TEST(frsz2_gpu, TestBitCast32)
     // but signed -> unsigned keeps the bit pattern if 2's complement is used
     assert(static_cast<ui_type>(expected_i[i]) == expected_ui[i]);
   }
-  const std::vector<ftype> expected_f{ 1.25f,
-                                       std::numeric_limits<ftype>::denorm_min(),
-                                       std::numeric_limits<ftype>::min(),
-                                       -std::numeric_limits<ftype>::infinity(),
-                                       0.f,
-                                       -1.f - std::numeric_limits<ftype>::epsilon(),
-                                       std::numeric_limits<ftype>::epsilon(),
-                                       21.f };
+  const std::vector<f_type> expected_f{ 1.25f,
+                                        std::numeric_limits<f_type>::denorm_min(),
+                                        std::numeric_limits<f_type>::min(),
+                                        -std::numeric_limits<f_type>::infinity(),
+                                        0.f,
+                                        -1.f - std::numeric_limits<f_type>::epsilon(),
+                                        std::numeric_limits<f_type>::epsilon(),
+                                        21.f };
   std::cout << std::scientific << std::setprecision(8);
   std::cerr << std::scientific << std::setprecision(8);
   perform_bit_cast_tests<8>(expected_ui, expected_f);
@@ -120,7 +119,7 @@ TEST(frsz2_gpu, TestBitCast32)
 
 TEST(frsz2_gpu, TestBitCast64)
 {
-  using ftype = double;
+  using f_type = double;
   using i_type = std::int64_t;
   using ui_type = std::uint64_t;
   std::vector<ui_type> expected_ui({ 0b0'01111111111'0100000000000000000000000000000000000000000000000000,
@@ -140,18 +139,307 @@ TEST(frsz2_gpu, TestBitCast64)
     // but signed -> unsigned keeps the bit pattern if 2's complement is used
     assert(static_cast<ui_type>(expected_i[i]) == expected_ui[i]);
   }
-  const std::vector<ftype> expected_f{ 1.25,
-                                       std::numeric_limits<ftype>::denorm_min(),
-                                       std::numeric_limits<ftype>::min(),
-                                       -std::numeric_limits<ftype>::infinity(),
-                                       0.,
-                                       -1. - std::numeric_limits<ftype>::epsilon(),
-                                       std::numeric_limits<ftype>::epsilon(),
-                                       21. };
+  const std::vector<f_type> expected_f{ 1.25,
+                                        std::numeric_limits<f_type>::denorm_min(),
+                                        std::numeric_limits<f_type>::min(),
+                                        -std::numeric_limits<f_type>::infinity(),
+                                        0.,
+                                        -1. - std::numeric_limits<f_type>::epsilon(),
+                                        std::numeric_limits<f_type>::epsilon(),
+                                        21. };
   std::cout << std::scientific << std::setprecision(17);
   std::cerr << std::scientific << std::setprecision(17);
   perform_bit_cast_tests<8>(expected_ui, expected_f);
   perform_bit_cast_tests<8>(expected_i, expected_f);
+}
+
+// TODO FIXME This function might cause the problematic behavior
+TEST(frsz2_gpu, shift_left)
+{
+  // Little- vs. Big-endian
+  // 01 02 03 04
+  // 04 03 02 01
+  /*
+    using in_type = std::uint32_t;
+    using out_type = std::uint32_t;
+    in_type input32[] = { 0x0F'1E'2D'3C, 0x4B'5A'69'78 };
+    std::vector<std::uint8_t> bits_arg{1,2,3,4,5,6,7,8,9,10,16,32};
+    std::vector<std::uint8_t> offset{};
+    std::vector<out_type> output{};
+
+    {
+      uint32_t input[] = { 0x00000000, 0xFFFFFFFF };
+      EXPECT_EQ(shift_left<uint32_t>(input, 32, 0), 0x00000000);
+      EXPECT_EQ(shift_left<uint32_t>(input, 32, 1), 0x00000001);
+      EXPECT_EQ(shift_left<uint32_t>(input, 32, 2), 0x00000003);
+      EXPECT_EQ(shift_left<uint32_t>(input, 32, 3), 0x00000007);
+      EXPECT_EQ(shift_left<uint32_t>(input, 32, 4), 0x0000000F);
+      EXPECT_EQ(shift_left<uint32_t>(input, 32, 5), 0x0000001F);
+      EXPECT_EQ(shift_left<uint32_t>(input, 32, 6), 0x0000003F);
+      EXPECT_EQ(shift_left<uint32_t>(input, 32, 7), 0x0000007F);
+      EXPECT_EQ(shift_left<uint16_t>(input, 16, 0), 0x0000);
+      EXPECT_EQ(shift_left<uint16_t>(input, 16, 1), 0x0000);
+      EXPECT_EQ(shift_left<uint16_t>(input, 16, 2), 0x0000);
+      EXPECT_EQ(shift_left<uint16_t>(input, 16, 3), 0x0000);
+      EXPECT_EQ(shift_left<uint16_t>(input, 16, 4), 0x0000);
+      EXPECT_EQ(shift_left<uint16_t>(input, 16, 5), 0x0000);
+      EXPECT_EQ(shift_left<uint16_t>(input, 16, 6), 0x0000);
+      EXPECT_EQ(shift_left<uint16_t>(input, 16, 7), 0x0000);
+      EXPECT_EQ(shift_left<uint8_t>(input, 8, 0), 0x00);
+      EXPECT_EQ(shift_left<uint8_t>(input, 8, 1), 0x00);
+      EXPECT_EQ(shift_left<uint8_t>(input, 8, 2), 0x00);
+      EXPECT_EQ(shift_left<uint8_t>(input, 8, 3), 0x00);
+      EXPECT_EQ(shift_left<uint8_t>(input, 8, 4), 0x00);
+      EXPECT_EQ(shift_left<uint8_t>(input, 8, 5), 0x00);
+      EXPECT_EQ(shift_left<uint8_t>(input, 8, 6), 0x00);
+      EXPECT_EQ(shift_left<uint8_t>(input, 8, 7), 0x00);
+    }
+    {
+      uint32_t input[] = { 0xFFFFFFFF, 0x00000000 };
+      EXPECT_EQ(shift_left<uint32_t>(input, 32, 0), 0xFFFFFFFF);
+      EXPECT_EQ(shift_left<uint32_t>(input, 32, 1), 0xFFFFFFFE);
+      EXPECT_EQ(shift_left<uint32_t>(input, 32, 2), 0xFFFFFFFC);
+      EXPECT_EQ(shift_left<uint32_t>(input, 32, 3), 0xFFFFFFF8);
+      EXPECT_EQ(shift_left<uint32_t>(input, 32, 4), 0xFFFFFFF0);
+      EXPECT_EQ(shift_left<uint32_t>(input, 32, 5), 0xFFFFFFE0);
+      EXPECT_EQ(shift_left<uint32_t>(input, 32, 6), 0xFFFFFFC0);
+      EXPECT_EQ(shift_left<uint32_t>(input, 32, 7), 0xFFFFFF80);
+    }
+    */
+}
+
+template<class FloatingType>
+struct dismantle_floating_value
+{
+private:
+  using sign_t = typename frsz::detail::fp::float_traits<FloatingType>::sign_t;
+  using exponent_t = typename frsz::detail::fp::float_traits<FloatingType>::exponent_t;
+  using significand_t = typename frsz::detail::fp::float_traits<FloatingType>::significand_t;
+
+public:
+  void __device__ __host__ operator()(int idx,
+                                      const FloatingType* src,
+                                      sign_t* sign,
+                                      exponent_t* exponent,
+                                      significand_t* significand) const
+  {
+    const auto val = src[idx];
+    sign[idx] = frsz::detail::fp::sign(val);
+    exponent[idx] = frsz::detail::fp::exponent(val);
+    significand[idx] = frsz::detail::fp::significand(val);
+  }
+};
+
+template<int num_elems, class FType>
+void
+perform_dismantle_floating_value(
+  const std::vector<FType>& input,
+  const std::vector<typename frsz::detail::fp::float_traits<FType>::sign_t>& expected_sign,
+  const std::vector<typename frsz::detail::fp::float_traits<FType>::exponent_t>& expected_exponent,
+  const std::vector<typename frsz::detail::fp::float_traits<FType>::significand_t>& expected_significand)
+{
+  using sign_t = typename frsz::detail::fp::float_traits<FType>::sign_t;
+  using exponent_t = typename frsz::detail::fp::float_traits<FType>::exponent_t;
+  using significand_t = typename frsz::detail::fp::float_traits<FType>::significand_t;
+  ASSERT_EQ(input.size(), num_elems);
+  ASSERT_EQ(input.size(), expected_sign.size());
+  ASSERT_EQ(input.size(), expected_exponent.size());
+  ASSERT_EQ(input.size(), expected_significand.size());
+  Memory<FType> input_mem(input);
+  Memory<sign_t> sign_mem(input.size(), {});
+  Memory<exponent_t> exponent_mem(input.size(), {});
+  Memory<significand_t> significand_mem(input.size(), {});
+  bool cmp_devices = compare_kernel<1, num_elems>(
+    dismantle_floating_value<FType>{}, input_mem, sign_mem, exponent_mem, significand_mem);
+  EXPECT_TRUE(cmp_devices);
+  auto cmp_sign = compare_vectors(sign_mem.get_host_vector(), expected_sign);
+  EXPECT_TRUE(cmp_sign);
+  auto cmp_exponent = compare_vectors(exponent_mem.get_host_vector(), expected_exponent);
+  EXPECT_TRUE(cmp_exponent);
+  auto cmp_significand = compare_vectors(significand_mem.get_host_vector(), expected_significand);
+  EXPECT_TRUE(cmp_significand);
+}
+
+TEST(frsz2_gpu, dismantling_floating)
+{
+  std::vector<float> input_val32{ 32.f, 0.5f, 0.f, -0.375f };
+  std::vector<bool> sign32{ false, false, false, true };
+  std::vector<std::int8_t> exponent32{ 5, -1, -127, -2 };
+  std::vector<std::uint32_t> significand32{ 1 << 23, 1 << 23, 0, 3 << 22 };
+
+  std::vector<double> input_val64{ -32., 0.5, 0., -0.375 };
+  std::vector<bool> sign64{ true, false, false, true };
+  std::vector<std::int16_t> exponent64{ 5, -1, -1023, -2 };
+  std::vector<std::uint64_t> significand64{
+    std::uint64_t{ 1 } << 52, std::uint64_t{ 1 } << 52, 0, std::uint64_t{ 3 } << 51
+  };
+
+  perform_dismantle_floating_value<4, float>(input_val32, sign32, exponent32, significand32);
+  perform_dismantle_floating_value<4, double>(input_val64, sign64, exponent64, significand64);
+}
+
+template<class FloatingType>
+struct floating_and_fixed_conversions
+{
+public:
+  using uint_type = frsz::detail::scaled_t<FloatingType>;
+
+  void __device__ __host__ operator()(int idx,
+                                      const FloatingType* src,
+                                      const std::int16_t* exponent,
+                                      uint_type* intermediate,
+                                      FloatingType* result) const
+  {
+    const auto val = src[idx];
+    const auto exp = exponent[idx];
+    intermediate[idx] = frsz::detail::fp::floating_to_fixed(val, exp);
+    result[idx] = frsz::detail::fp::fixed_to_floating<FloatingType>(intermediate[idx], exp);
+  }
+};
+
+template<int num_elems, class FType>
+void
+perform_floating_and_fixed_conversions(
+  const std::vector<FType>& input,
+  const std::vector<std::int16_t>& exponent,
+  const std::vector<frsz::detail::scaled_t<FType>>& expected_intermediate,
+  const std::vector<FType>& expected_output)
+{
+  ASSERT_EQ(input.size(), num_elems);
+  ASSERT_EQ(input.size(), exponent.size());
+  ASSERT_EQ(input.size(), expected_intermediate.size());
+  ASSERT_EQ(input.size(), expected_output.size());
+  Memory<FType> input_mem(input);
+  Memory<std::int16_t> exponent_mem(exponent);
+  Memory<frsz::detail::scaled_t<FType>> intermediate_mem(expected_intermediate.size(), {});
+  Memory<FType> output_mem(input.size(), {});
+  bool cmp_devices = compare_kernel<1, num_elems>(
+    floating_and_fixed_conversions<FType>{}, input_mem, exponent_mem, intermediate_mem, output_mem);
+  EXPECT_TRUE(cmp_devices);
+  auto cmp_intermediate = compare_vectors(intermediate_mem.get_host_vector(), expected_intermediate);
+  EXPECT_TRUE(cmp_intermediate);
+  auto cmp_output = compare_vectors(output_mem.get_host_vector(), expected_output);
+  EXPECT_TRUE(cmp_output);
+}
+
+// TODO brute-force all fp32 values for fixed_to_floating and floating_to_fixed
+TEST(frsz2_gpu, floating_to_fixed)
+{
+  std::vector<float> input32{
+    32.f, 2.f, frsz::xstd::bit_cast<float>(0b0'00000000'11111111111111111111111), 0.125f, -0.375f
+  };
+  std::vector<std::int16_t> exp32{ 5, 5, 5, 2, 1 };
+  std::vector<std::uint32_t> intermediate32{ std::uint32_t{ 0x800000 } << 7,
+                                             std::uint32_t{ 0x800000 } << 7 - 4,
+                                             0,
+                                             std::uint32_t{ 0x02000000 },
+                                             std::uint32_t{ 0x8C000000 } };
+  std::vector<float> output32{
+    32.f, 2.f, frsz::xstd::bit_cast<float>(0b0'01100101'00000000000000000000000), 0.125f, -0.375f
+  };
+
+  std::vector<double> input64{ 32., 2., -0.125, 0.375 };
+  std::vector<std::int16_t> exp64{ 5, 5, 2, -1 };
+  std::vector<std::uint64_t> intermediate64{ std::uint64_t{ 1 } << 52 + 10,
+                                             std::uint64_t{ 1 } << 52 + 10 - 4,
+                                             std::uint64_t{ 0x82 } << 56,
+                                             std::uint64_t{ 3 } << 60 };
+  std::vector<double> output64{ 32., 2., -0.125, 0.375 };
+
+  perform_floating_and_fixed_conversions<5>(input32, exp32, intermediate32, output32);
+  perform_floating_and_fixed_conversions<4>(input64, exp64, intermediate64, output64);
+}
+
+template<std::uint8_t bits_per_value, int max_exp_block_size, int subwarp_size, class T, class ExpType>
+struct decompress_launch
+{
+public:
+  void __device__ __host__ operator()(int idx,
+                                      T* output,
+                                      const std::size_t total_elements,
+                                      const std::uint8_t* compressed) const
+  {
+#if defined(__CUDA_ARCH__)
+    frsz::decompress_gpu_impl<bits_per_value, max_exp_block_size, subwarp_size, T, ExpType>(
+      output, total_elements, compressed);
+#else
+    frsz::decompress_cpu_impl<bits_per_value, max_exp_block_size, subwarp_size, T, ExpType>(
+      output, total_elements, compressed);
+#endif
+  }
+};
+
+void
+print_bytes(const std::uint8_t* bytes, std::size_t size)
+{
+  for (std::size_t i = 0; i < size; ++i) {
+    if (i % 8 == 0) {
+      std::cout << '\n' << std::setw(2) << i << ": ";
+    }
+    std::cout << std::setw(2) << std::setfill('0') << std::hex << static_cast<int>(bytes[i]) << std::dec
+              << ' ';
+  }
+  std::cout << std::dec << '\n';
+}
+
+template<std::uint8_t bits_per_value, int max_exp_block_size, int subwarp_size, class T, class ExpType>
+void
+launch_both_compressions(const std::vector<T>& flt_vec)
+{
+  Memory<T> flt_mem(flt_vec);
+  const std::size_t total_elements = flt_mem.get_num_elems();
+  const int num_threads = max_exp_block_size;
+  const int num_blocks = frsz::ceildiv<int>(total_elements, num_threads);
+  const std::size_t compressed_memory_size =
+    frsz::compute_compressed_memory_size_byte<bits_per_value, max_exp_block_size, ExpType>(total_elements);
+
+  Memory<std::uint8_t> compressed_mem(compressed_memory_size + max_exp_block_size * bits_per_value / CHAR_BIT,
+                                      0xFF);
+  frsz::compress_cpu_impl<bits_per_value, max_exp_block_size, subwarp_size, T, ExpType>(
+    flt_mem.get_host(), total_elements, compressed_mem.get_host());
+
+  frsz::compress_gpu_impl<bits_per_value, max_exp_block_size, subwarp_size, T, ExpType>
+    <<<num_blocks, num_threads>>>(flt_mem.get_device(), total_elements, compressed_mem.get_device());
+  // print_bytes(compressed_mem.get_device_copy().data(), compressed_memory_size);
+  // print_bytes(compressed_mem.get_host(), compressed_memory_size);
+
+  // EXPECT_TRUE(compressed_mem.is_device_matching_host());
+  const auto device_compressed = compressed_mem.get_device_copy();
+  for (std::size_t i = 0; i < compressed_memory_size; ++i) {
+    EXPECT_EQ(int(compressed_mem.get_host_vector()[i]), int(device_compressed[i]));
+  }
+  // EXPECT_TRUE(compressed_mem.is_device_matching_host());
+  // compressed_mem.to_device();
+
+  std::vector<T> overwrite_memory_flt(total_elements, std::numeric_limits<T>::infinity());
+  flt_mem.set_memory_to(overwrite_memory_flt);
+
+  frsz::decompress_gpu_impl<bits_per_value, max_exp_block_size, subwarp_size, T, ExpType>
+    <<<num_blocks, num_threads>>>(flt_mem.get_device(), total_elements, compressed_mem.get_device());
+  cudaDeviceSynchronize();
+  frsz::decompress_cpu_impl<bits_per_value, max_exp_block_size, subwarp_size, T, ExpType>(
+    flt_mem.get_host(), total_elements, compressed_mem.get_host());
+  // flt_mem.print_device_host();
+  EXPECT_TRUE(flt_mem.is_device_matching_host());
+  const auto no_loss = compare_vectors(flt_mem.get_host_vector(), flt_vec);
+  EXPECT_TRUE(no_loss);
+  // for (std::size_t i = 0; i < total_elements; ++i) {
+  //   std::cout << std::setw(2) << i << ": " << flt_vec[i] << " -> " << flt_mem.get_host()[i] << '\n';
+  // }
+}
+
+// TODO
+TEST(frsz2_gpu, decompress)
+{
+  using f_type = double;
+  std::array<double, 9> repeat_vals{ 1., 2., 3., 4., 0.25, -0.25, -0.125, 0.25 / 1024., 0.125 };
+  const std::size_t total_size{ 18 };
+  std::vector<f_type> vect(total_size);
+  for (std::size_t i = 0; i < total_size; ++i) {
+    vect[i] = repeat_vals[i % repeat_vals.size()];
+  }
+  launch_both_compressions<16, 8, 8, f_type, std::int16_t>(vect);
+  // launch_both_compressions<15, 8, 8, f_type, std::int16_t>(vect);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
