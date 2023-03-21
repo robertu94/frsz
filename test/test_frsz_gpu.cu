@@ -350,25 +350,6 @@ TEST(frsz2_gpu, floating_to_fixed)
   perform_floating_and_fixed_conversions<4>(input64, exp64, intermediate64, output64);
 }
 
-template<std::uint8_t bits_per_value, int max_exp_block_size, int subwarp_size, class T, class ExpType>
-struct decompress_launch
-{
-public:
-  void __device__ __host__ operator()(int idx,
-                                      T* output,
-                                      const std::size_t total_elements,
-                                      const std::uint8_t* compressed) const
-  {
-#if defined(__CUDA_ARCH__)
-    frsz::decompress_gpu_impl<bits_per_value, max_exp_block_size, subwarp_size, T, ExpType>(
-      output, total_elements, compressed);
-#else
-    frsz::decompress_cpu_impl<bits_per_value, max_exp_block_size, subwarp_size, T, ExpType>(
-      output, total_elements, compressed);
-#endif
-  }
-};
-
 void
 print_bytes(const std::uint8_t* bytes, std::size_t size)
 {
@@ -382,46 +363,56 @@ print_bytes(const std::uint8_t* bytes, std::size_t size)
   std::cout << std::dec << '\n';
 }
 
-template<std::uint8_t bits_per_value, int max_exp_block_size, int subwarp_size, class T, class ExpType>
+template<std::uint8_t bits_per_value,
+         int max_exp_block_size,
+         int work_block_size,
+         class FpType,
+         class ExpType>
 void
-launch_both_compressions(const std::vector<T>& flt_vec)
+launch_both_compressions(const std::vector<FpType>& flt_vec)
 {
-  Memory<T> flt_mem(flt_vec);
+  using frsz2_comp =
+    frsz::frsz2_compressor<bits_per_value, max_exp_block_size, work_block_size, FpType, ExpType>;
+  Memory<FpType> flt_mem(flt_vec);
   const std::size_t total_elements = flt_mem.get_num_elems();
   const int num_threads = max_exp_block_size;
   const int num_blocks = frsz::ceildiv<int>(total_elements, num_threads);
-  const std::size_t compressed_memory_size =
-    frsz::compute_compressed_memory_size_byte<bits_per_value, max_exp_block_size, ExpType>(total_elements);
+  const std::size_t compressed_memory_size = frsz2_comp::compute_compressed_memory_size_byte(total_elements);
 
   Memory<std::uint8_t> compressed_mem(compressed_memory_size + max_exp_block_size * bits_per_value / CHAR_BIT,
                                       0xFF);
-  frsz::compress_cpu_impl<bits_per_value, max_exp_block_size, subwarp_size, T, ExpType>(
-    flt_mem.get_host(), total_elements, compressed_mem.get_host());
+  frsz2_comp::compress_cpu_impl(flt_mem.get_host_const(), total_elements, compressed_mem.get_host());
 
-  frsz::compress_gpu_impl<bits_per_value, max_exp_block_size, subwarp_size, T, ExpType>
-    <<<num_blocks, num_threads>>>(flt_mem.get_device(), total_elements, compressed_mem.get_device());
+  frsz::compress_gpu<frsz2_comp>
+    <<<num_blocks, num_threads>>>(flt_mem.get_device_const(), total_elements, compressed_mem.get_device());
   // print_bytes(compressed_mem.get_device_copy().data(), compressed_memory_size);
   // print_bytes(compressed_mem.get_host(), compressed_memory_size);
 
   // EXPECT_TRUE(compressed_mem.is_device_matching_host());
   const auto device_compressed = compressed_mem.get_device_copy();
+  bool is_compressed_same = true;
   for (std::size_t i = 0; i < compressed_memory_size; ++i) {
-    EXPECT_EQ(int(compressed_mem.get_host_vector()[i]), int(device_compressed[i]));
+    const auto hval = int(compressed_mem.get_host_vector()[i]);
+    const auto dval = int(device_compressed[i]);
+    if (hval != dval) {
+      // std::cerr << i << ": host " << hval << " vs " << dval << " device\n";
+      is_compressed_same = false;
+    }
   }
+  EXPECT_TRUE(is_compressed_same);
   // EXPECT_TRUE(compressed_mem.is_device_matching_host());
   // compressed_mem.to_device();
 
-  std::vector<T> overwrite_memory_flt(total_elements, std::numeric_limits<T>::infinity());
+  std::vector<FpType> overwrite_memory_flt(total_elements, std::numeric_limits<FpType>::infinity());
   flt_mem.set_memory_to(overwrite_memory_flt);
 
-  frsz::decompress_gpu_impl<bits_per_value, max_exp_block_size, subwarp_size, T, ExpType>
-    <<<num_blocks, num_threads>>>(flt_mem.get_device(), total_elements, compressed_mem.get_device());
+  frsz::decompress_gpu<frsz2_comp>
+    <<<num_blocks, num_threads>>>(flt_mem.get_device(), total_elements, compressed_mem.get_device_const());
   cudaDeviceSynchronize();
-  frsz::decompress_cpu_impl<bits_per_value, max_exp_block_size, subwarp_size, T, ExpType>(
-    flt_mem.get_host(), total_elements, compressed_mem.get_host());
+  frsz2_comp::decompress_cpu_impl(flt_mem.get_host(), total_elements, compressed_mem.get_host_const());
   // flt_mem.print_device_host();
   EXPECT_TRUE(flt_mem.is_device_matching_host());
-  const auto no_loss = compare_vectors(flt_mem.get_host_vector(), flt_vec);
+  const auto no_loss = compare_vectors(flt_mem.get_device_copy(), flt_vec);
   EXPECT_TRUE(no_loss);
   // for (std::size_t i = 0; i < total_elements; ++i) {
   //   std::cout << std::setw(2) << i << ": " << flt_vec[i] << " -> " << flt_mem.get_host()[i] << '\n';
@@ -432,14 +423,15 @@ launch_both_compressions(const std::vector<T>& flt_vec)
 TEST(frsz2_gpu, decompress)
 {
   using f_type = double;
-  std::array<double, 9> repeat_vals{ 1., 2., 3., 4., 0.25, -0.25, -0.125, 0.25 / 1024., 0.125 };
+  std::array<double, 9> repeat_vals{ 1., 2., 3., 4., 0.25, -0.25, -0.125, 1 / 32., 0.125 };
   const std::size_t total_size{ 18 };
   std::vector<f_type> vect(total_size);
   for (std::size_t i = 0; i < total_size; ++i) {
     vect[i] = repeat_vals[i % repeat_vals.size()];
   }
   launch_both_compressions<16, 8, 8, f_type, std::int16_t>(vect);
-  // launch_both_compressions<15, 8, 8, f_type, std::int16_t>(vect);
+  launch_both_compressions<15, 8, 8, f_type, std::int16_t>(vect);
+  launch_both_compressions<9, 8, 8, f_type, std::int16_t>(vect);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
