@@ -363,16 +363,13 @@ print_bytes(const std::uint8_t* bytes, std::size_t size)
   std::cout << std::dec << '\n';
 }
 
-template<std::uint8_t bits_per_value,
-         int max_exp_block_size,
-         int work_block_size,
-         class FpType,
-         class ExpType>
+template<std::uint8_t bits_per_value, int max_exp_block_size, class FpType, class ExpType>
 void
 launch_both_compressions(const std::vector<FpType>& flt_vec)
 {
-  using frsz2_comp =
-    frsz::frsz2_compressor<bits_per_value, max_exp_block_size, work_block_size, FpType, ExpType>;
+  using frsz2_comp = frsz::frsz2_compressor<bits_per_value, max_exp_block_size, FpType, ExpType>;
+  // std::cout << "Test with " << int(bits_per_value) << "bits; Exponent block size: " << max_exp_block_size
+  //           << '\n';
   Memory<FpType> flt_mem(flt_vec);
   const std::size_t total_elements = flt_mem.get_num_elems();
   const int num_threads = max_exp_block_size;
@@ -402,6 +399,7 @@ launch_both_compressions(const std::vector<FpType>& flt_vec)
   EXPECT_TRUE(is_compressed_same);
   // EXPECT_TRUE(compressed_mem.is_device_matching_host());
   // compressed_mem.to_device();
+  // compressed_mem.to_host();
 
   std::vector<FpType> overwrite_memory_flt(total_elements, std::numeric_limits<FpType>::infinity());
   flt_mem.set_memory_to(overwrite_memory_flt);
@@ -429,9 +427,11 @@ TEST(frsz2_gpu, decompress)
   for (std::size_t i = 0; i < total_size; ++i) {
     vect[i] = repeat_vals[i % repeat_vals.size()];
   }
-  launch_both_compressions<16, 8, 8, f_type, std::int16_t>(vect);
-  launch_both_compressions<15, 8, 8, f_type, std::int16_t>(vect);
-  launch_both_compressions<9, 8, 8, f_type, std::int16_t>(vect);
+  launch_both_compressions<16, 8, f_type, std::int16_t>(vect);
+  launch_both_compressions<15, 8, f_type, std::int16_t>(vect);
+  launch_both_compressions<9, 8, f_type, std::int16_t>(vect);
+  launch_both_compressions<9, 4, f_type, std::int16_t>(vect);
+  launch_both_compressions<9, 5, f_type, std::int16_t>(vect);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
