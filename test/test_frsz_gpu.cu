@@ -153,61 +153,6 @@ TEST(frsz2_gpu, TestBitCast64)
   perform_bit_cast_tests<8>(expected_i, expected_f);
 }
 
-// TODO FIXME This function might cause the problematic behavior
-TEST(frsz2_gpu, shift_left)
-{
-  // Little- vs. Big-endian
-  // 01 02 03 04
-  // 04 03 02 01
-  /*
-    using in_type = std::uint32_t;
-    using out_type = std::uint32_t;
-    in_type input32[] = { 0x0F'1E'2D'3C, 0x4B'5A'69'78 };
-    std::vector<std::uint8_t> bits_arg{1,2,3,4,5,6,7,8,9,10,16,32};
-    std::vector<std::uint8_t> offset{};
-    std::vector<out_type> output{};
-
-    {
-      uint32_t input[] = { 0x00000000, 0xFFFFFFFF };
-      EXPECT_EQ(shift_left<uint32_t>(input, 32, 0), 0x00000000);
-      EXPECT_EQ(shift_left<uint32_t>(input, 32, 1), 0x00000001);
-      EXPECT_EQ(shift_left<uint32_t>(input, 32, 2), 0x00000003);
-      EXPECT_EQ(shift_left<uint32_t>(input, 32, 3), 0x00000007);
-      EXPECT_EQ(shift_left<uint32_t>(input, 32, 4), 0x0000000F);
-      EXPECT_EQ(shift_left<uint32_t>(input, 32, 5), 0x0000001F);
-      EXPECT_EQ(shift_left<uint32_t>(input, 32, 6), 0x0000003F);
-      EXPECT_EQ(shift_left<uint32_t>(input, 32, 7), 0x0000007F);
-      EXPECT_EQ(shift_left<uint16_t>(input, 16, 0), 0x0000);
-      EXPECT_EQ(shift_left<uint16_t>(input, 16, 1), 0x0000);
-      EXPECT_EQ(shift_left<uint16_t>(input, 16, 2), 0x0000);
-      EXPECT_EQ(shift_left<uint16_t>(input, 16, 3), 0x0000);
-      EXPECT_EQ(shift_left<uint16_t>(input, 16, 4), 0x0000);
-      EXPECT_EQ(shift_left<uint16_t>(input, 16, 5), 0x0000);
-      EXPECT_EQ(shift_left<uint16_t>(input, 16, 6), 0x0000);
-      EXPECT_EQ(shift_left<uint16_t>(input, 16, 7), 0x0000);
-      EXPECT_EQ(shift_left<uint8_t>(input, 8, 0), 0x00);
-      EXPECT_EQ(shift_left<uint8_t>(input, 8, 1), 0x00);
-      EXPECT_EQ(shift_left<uint8_t>(input, 8, 2), 0x00);
-      EXPECT_EQ(shift_left<uint8_t>(input, 8, 3), 0x00);
-      EXPECT_EQ(shift_left<uint8_t>(input, 8, 4), 0x00);
-      EXPECT_EQ(shift_left<uint8_t>(input, 8, 5), 0x00);
-      EXPECT_EQ(shift_left<uint8_t>(input, 8, 6), 0x00);
-      EXPECT_EQ(shift_left<uint8_t>(input, 8, 7), 0x00);
-    }
-    {
-      uint32_t input[] = { 0xFFFFFFFF, 0x00000000 };
-      EXPECT_EQ(shift_left<uint32_t>(input, 32, 0), 0xFFFFFFFF);
-      EXPECT_EQ(shift_left<uint32_t>(input, 32, 1), 0xFFFFFFFE);
-      EXPECT_EQ(shift_left<uint32_t>(input, 32, 2), 0xFFFFFFFC);
-      EXPECT_EQ(shift_left<uint32_t>(input, 32, 3), 0xFFFFFFF8);
-      EXPECT_EQ(shift_left<uint32_t>(input, 32, 4), 0xFFFFFFF0);
-      EXPECT_EQ(shift_left<uint32_t>(input, 32, 5), 0xFFFFFFE0);
-      EXPECT_EQ(shift_left<uint32_t>(input, 32, 6), 0xFFFFFFC0);
-      EXPECT_EQ(shift_left<uint32_t>(input, 32, 7), 0xFFFFFF80);
-    }
-    */
-}
-
 template<class FloatingType>
 struct dismantle_floating_value
 {
@@ -376,13 +321,14 @@ launch_both_compressions(const std::vector<FpType>& flt_vec)
   const int num_blocks = frsz::ceildiv<int>(total_elements, num_threads);
   const std::size_t compressed_memory_size = frsz2_comp::compute_compressed_memory_size_byte(total_elements);
 
-  Memory<std::uint8_t> compressed_mem(compressed_memory_size + max_exp_block_size * bits_per_value / CHAR_BIT,
-                                      0xFF);
+  Memory<std::uint8_t> compressed_mem(compressed_memory_size, 0xFF);
   frsz2_comp::compress_cpu_impl(flt_mem.get_host_const(), total_elements, compressed_mem.get_host());
 
   frsz::compress_gpu<frsz2_comp>
     <<<num_blocks, num_threads>>>(flt_mem.get_device_const(), total_elements, compressed_mem.get_device());
+  // std::cout << "Device compressed memory:\n";
   // print_bytes(compressed_mem.get_device_copy().data(), compressed_memory_size);
+  // std::cout << "Host compressed memory:\n";
   // print_bytes(compressed_mem.get_host(), compressed_memory_size);
 
   // EXPECT_TRUE(compressed_mem.is_device_matching_host());
@@ -422,7 +368,7 @@ TEST(frsz2_gpu, decompress)
 {
   using f_type = double;
   std::array<double, 9> repeat_vals{ 1., 2., 3., 4., 0.25, -0.25, -0.125, 1 / 32., 0.125 };
-  const std::size_t total_size{ 18 };
+  const std::size_t total_size{ 2049 };
   std::vector<f_type> vect(total_size);
   for (std::size_t i = 0; i < total_size; ++i) {
     vect[i] = repeat_vals[i % repeat_vals.size()];
@@ -432,22 +378,22 @@ TEST(frsz2_gpu, decompress)
   launch_both_compressions<9, 8, f_type, std::int16_t>(vect);
   launch_both_compressions<9, 4, f_type, std::int16_t>(vect);
   launch_both_compressions<9, 5, f_type, std::int16_t>(vect);
+
+  using f_type2 = float;
+  std::vector<f_type2> vect2(total_size + 111);
+  for (std::size_t i = 0; i < vect2.size(); ++i) {
+    vect2[i] = repeat_vals[i % repeat_vals.size()];
+  }
+  launch_both_compressions<16, 8, f_type2, std::int16_t>(vect2);
+  launch_both_compressions<15, 8, f_type2, std::int8_t>(vect2);
+  launch_both_compressions<9, 4, f_type2, std::int8_t>(vect2);
+  launch_both_compressions<9, 5, f_type2, std::int8_t>(vect2);
+  // launch_both_compressions<4, 8, f_type2, std::int8_t>(vect2);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
 #if false
-template<int I>
-struct read_value
-{};
-
-template<>
-struct read_value<1111111>
-{
-  constexpr static int val = 0;
-};
-
-// auto tmp = read_value<__GNUC__>::val;
 
 template<class T>
 using scaled_t = std::conditional_t<
@@ -502,137 +448,6 @@ restore_block(scaled_t<T> const* begin, scaled_t<T> const* end, int expmax)
   }
 
   return out;
-}
-
-constexpr int
-ceildiv(int a, int b)
-{
-  if (a % b == 0)
-    return a / b;
-  else
-    return a / b + 1;
-}
-
-template<class T>
-struct ones_t;
-
-template<>
-struct ones_t<uint8_t>
-{
-  static constexpr uint8_t value = 0xFF;
-};
-template<>
-struct ones_t<uint16_t>
-{
-  static constexpr uint16_t value = 0xFFFF;
-};
-template<>
-struct ones_t<uint32_t>
-{
-  static constexpr uint32_t value = 0xFFFFFFFF;
-};
-template<>
-struct ones_t<float>
-{
-  static constexpr uint32_t value = 0xFFFFFFFF;
-};
-template<>
-struct ones_t<uint64_t>
-{
-  static constexpr uint64_t value = 0xFFFFFFFFFFFFFFFF;
-};
-template<>
-struct ones_t<double>
-{
-  static constexpr uint64_t value = 0xFFFFFFFFFFFFFFFF;
-};
-template<>
-struct ones_t<int8_t>
-{
-  static constexpr uint8_t value = 0xFF;
-};
-template<>
-struct ones_t<int16_t>
-{
-  static constexpr uint16_t value = 0xFFFF;
-};
-template<>
-struct ones_t<int32_t>
-{
-  static constexpr uint32_t value = 0xFFFFFFFF;
-};
-template<>
-struct ones_t<int64_t>
-{
-  static constexpr uint64_t value = 0xFFFFFFFFFFFFFFFF;
-};
-
-/**
- * \param[in] in pointer to the byte containing the bytes to shift
- * \param[in] bits how many bits to shift left
- * \param[in] offset what bit does the number start on?
- */
-template<class OutputType, class InputType>
-OutputType
-shift_left(InputType const* in, uint8_t bits, uint8_t offset)
-{
-  assert(offset < 8);
-  assert(bits <= sizeof(InputType) * 8);
-  OutputType result = in[0];
-  result <<= offset;
-  if (bits + offset > sizeof(InputType) * 8) {
-    const uint8_t remaining = bits - (sizeof(InputType) * 8 - offset);
-    OutputType remaining_bits =
-      ((in[1] >> (sizeof(InputType) * 8 - remaining)) & (ones_t<InputType>::value >> remaining));
-    remaining_bits <<= (sizeof(InputType) * 8 - bits);
-    result |= remaining_bits;
-  }
-  if (sizeof(OutputType) > sizeof(InputType)) {
-    result <<= 8 * (sizeof(OutputType) - sizeof(InputType));
-  }
-  return result;
-}
-
-TEST(frsz2, shift_left)
-{
-  {
-    uint32_t input[] = { 0x00000000, 0xFFFFFFFF };
-    EXPECT_EQ(shift_left<uint32_t>(input, 32, 0), 0x00000000);
-    EXPECT_EQ(shift_left<uint32_t>(input, 32, 1), 0x00000001);
-    EXPECT_EQ(shift_left<uint32_t>(input, 32, 2), 0x00000003);
-    EXPECT_EQ(shift_left<uint32_t>(input, 32, 3), 0x00000007);
-    EXPECT_EQ(shift_left<uint32_t>(input, 32, 4), 0x0000000F);
-    EXPECT_EQ(shift_left<uint32_t>(input, 32, 5), 0x0000001F);
-    EXPECT_EQ(shift_left<uint32_t>(input, 32, 6), 0x0000003F);
-    EXPECT_EQ(shift_left<uint32_t>(input, 32, 7), 0x0000007F);
-    EXPECT_EQ(shift_left<uint16_t>(input, 16, 0), 0x0000);
-    EXPECT_EQ(shift_left<uint16_t>(input, 16, 1), 0x0000);
-    EXPECT_EQ(shift_left<uint16_t>(input, 16, 2), 0x0000);
-    EXPECT_EQ(shift_left<uint16_t>(input, 16, 3), 0x0000);
-    EXPECT_EQ(shift_left<uint16_t>(input, 16, 4), 0x0000);
-    EXPECT_EQ(shift_left<uint16_t>(input, 16, 5), 0x0000);
-    EXPECT_EQ(shift_left<uint16_t>(input, 16, 6), 0x0000);
-    EXPECT_EQ(shift_left<uint16_t>(input, 16, 7), 0x0000);
-    EXPECT_EQ(shift_left<uint8_t>(input, 8, 0), 0x00);
-    EXPECT_EQ(shift_left<uint8_t>(input, 8, 1), 0x00);
-    EXPECT_EQ(shift_left<uint8_t>(input, 8, 2), 0x00);
-    EXPECT_EQ(shift_left<uint8_t>(input, 8, 3), 0x00);
-    EXPECT_EQ(shift_left<uint8_t>(input, 8, 4), 0x00);
-    EXPECT_EQ(shift_left<uint8_t>(input, 8, 5), 0x00);
-    EXPECT_EQ(shift_left<uint8_t>(input, 8, 6), 0x00);
-    EXPECT_EQ(shift_left<uint8_t>(input, 8, 7), 0x00);
-  }
-  {
-    uint32_t input[] = { 0xFFFFFFFF, 0x00000000 };
-    EXPECT_EQ(shift_left<uint32_t>(input, 32, 0), 0xFFFFFFFF);
-    EXPECT_EQ(shift_left<uint32_t>(input, 32, 1), 0xFFFFFFFE);
-    EXPECT_EQ(shift_left<uint32_t>(input, 32, 2), 0xFFFFFFFC);
-    EXPECT_EQ(shift_left<uint32_t>(input, 32, 3), 0xFFFFFFF8);
-    EXPECT_EQ(shift_left<uint32_t>(input, 32, 4), 0xFFFFFFF0);
-    EXPECT_EQ(shift_left<uint32_t>(input, 32, 5), 0xFFFFFFE0);
-    EXPECT_EQ(shift_left<uint32_t>(input, 32, 6), 0xFFFFFFC0);
-    EXPECT_EQ(shift_left<uint32_t>(input, 32, 7), 0xFFFFFF80);
-  }
 }
 
 template<class OutputType>
@@ -824,147 +639,6 @@ TEST(frsz2, prototype)
     auto result = test_compress<bits>(scaled, static_cast<int8_t>(e), expected_offsets);
     test_decompress<bits>(result, scaled.size(), expected_decompress);
   }
-}
-
-namespace fp {
-template<class T>
-struct float_traits
-{};
-template<>
-struct float_traits<float>
-{
-  using sign_t = bool;
-  using mantissa_t = int8_t;
-  using significand_t = uint32_t;
-  constexpr static int64_t sign_bits = 1;
-  constexpr static int64_t exponent_bits = 8;
-  constexpr static int64_t significand_bits = 23;
-};
-template<>
-struct float_traits<double>
-{
-  using sign_t = bool;
-  using mantissa_t = int16_t;
-  using significand_t = uint64_t;
-  constexpr static int64_t sign_bits = 1;
-  constexpr static int64_t exponent_bits = 11;
-  constexpr static int64_t significand_bits = 52;
-};
-
-template<class T>
-typename float_traits<T>::mantissa_t
-exponent(T f)
-{
-  constexpr size_t mantissa_shift = float_traits<T>::significand_bits + float_traits<T>::sign_bits;
-  return (std::bit_cast<scaled_t<T>>(f) >> float_traits<T>::significand_bits &
-          (ones_t<T>::value >> mantissa_shift)) -
-         ebias<T>;
-}
-template<class T>
-typename float_traits<T>::significand_t
-significand(T f)
-{
-  scaled_t<T> s =
-    std::bit_cast<scaled_t<T>>(f) & (ones_t<T>::value >> (sizeof(T) * 8 - float_traits<T>::significand_bits));
-  if (!(exponent(f) == -ebias<T>)) {
-    // is not subnormal, add leading 1 bit
-    s |= 1ull << float_traits<T>::significand_bits;
-  }
-  return s;
-}
-template<class T>
-typename float_traits<T>::sign_t
-sign(T f)
-{
-  return (std::bit_cast<scaled_t<T>>(f) & (1ull << (8 * sizeof(T) - 1)));
-}
-inline constexpr bool positive = false;
-inline constexpr bool negative = true;
-
-template<class T>
-int16_t
-is_normal(T f)
-{
-  if (!(exponent(f) == -ebias<T>)) {
-    return 1;
-  }
-  return 0;
-}
-
-template<class T>
-scaled_t<T>
-floating_to_fixed(T floating, int16_t block_exponent)
-{
-  auto s = sign(floating);
-  auto e = exponent(floating);
-  auto m = significand(floating);
-
-  assert(block_exponent >= e);
-  auto shift = (float_traits<T>::exponent_bits - 1 - (block_exponent - e));
-  scaled_t<T> r;
-  if (-float_traits<T>::significand_bits > shift) {
-    r = 0;
-  } else {
-    r = m << shift;
-  }
-  if (s) {
-    r |= 1ull << (sizeof(T) * 8 - 1);
-  }
-  return r;
-}
-template<class F, class T>
-F
-fixed_to_floating(T fixed, int16_t block_exponent)
-{
-  static_assert(sizeof(T) == sizeof(F));
-  auto f = fixed & (ones_t<T>::value >> 1);
-  auto z = std::countl_zero(f) - 1; // number of zeros after the sign bit
-  auto shift = -std::min(z, block_exponent + ebias<F>);
-
-  auto s = fixed & 1ull << (sizeof(T) * 8 - 1);
-  auto e = static_cast<uint64_t>(shift + block_exponent + ebias<F>) << float_traits<F>::significand_bits;
-  auto m = f >> (float_traits<F>::exponent_bits - 1 + shift);
-  m = m & (~(scaled_t<T>(1) << float_traits<F>::significand_bits)); // unset the implicit bit
-  scaled_t<T> r = s | e | m;
-  return std::bit_cast<F>(r);
-}
-}
-
-TEST(frsz2, floating_to_fixed)
-{
-  float f = 32.0;
-  EXPECT_EQ(fp::significand(f), 1 << 23);
-  EXPECT_EQ(fp::exponent(f), 5);
-  EXPECT_EQ(fp::sign(f), fp::positive);
-
-  float f2 = 0.5;
-  EXPECT_EQ(fp::significand(f2), 1 << 23);
-  EXPECT_EQ(fp::exponent(f2), -1);
-  EXPECT_EQ(fp::sign(f2), fp::positive);
-
-  double d = 32.0;
-  EXPECT_EQ(fp::significand(d), 1ull << 52);
-  EXPECT_EQ(fp::exponent(d), 5);
-  EXPECT_EQ(fp::sign(d), fp::positive);
-
-  float sn = 0;
-  EXPECT_EQ(fp::significand(sn), 0);
-  EXPECT_EQ(fp::exponent(sn), -127);
-  EXPECT_EQ(fp::sign(d), fp::positive);
-
-  double snd = 0;
-  EXPECT_EQ(fp::significand(snd), 0);
-  EXPECT_EQ(fp::exponent(snd), -1023);
-  EXPECT_EQ(fp::sign(snd), fp::positive);
-
-  EXPECT_EQ(fp::fixed_to_floating<float>(fp::floating_to_fixed(32.0f, 5), 5), 32.0f);
-  EXPECT_EQ(fp::fixed_to_floating<float>(fp::floating_to_fixed(2.0f, 5), 5), 2.0f);
-  EXPECT_EQ(fp::fixed_to_floating<double>(fp::floating_to_fixed(32.0, 5), 5), 32.0);
-  EXPECT_EQ(fp::fixed_to_floating<double>(fp::floating_to_fixed(2.0, 5), 5), 2.0);
-
-  float subnormal = std::bit_cast<float>(0b0000000001111111111111111111111);
-  float subnormal_5_expected = std::bit_cast<float>(0b00110010100000000000000000000000);
-  EXPECT_EQ(fp::fixed_to_floating<float>(fp::floating_to_fixed(subnormal, 5), 5), subnormal_5_expected);
 }
 
 /*
