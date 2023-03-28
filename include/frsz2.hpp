@@ -395,7 +395,9 @@ struct frsz2_compressor
   {
     const std::size_t remainder = number_elements % max_exp_block_size;
     return (number_elements / max_exp_block_size) * compressed_block_size_byte +
-           (remainder > 0) * (sizeof(exp_type) + ceildiv<std::size_t>(remainder * bits_per_value, CHAR_BIT));
+           (remainder > 0) *
+             (sizeof(exp_type) + ceildiv<std::size_t>(remainder * bits_per_value, uint_compressed_size_bit) *
+                                   sizeof(uint_compressed_type));
   }
 
   static constexpr FRSZ_ATTRIBUTES uint_fp_type compressed_to_uint_fp(const uint_compressed_type& val)

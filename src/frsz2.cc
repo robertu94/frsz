@@ -142,9 +142,12 @@ public:
     using ExpType = int16_t;
     const std::size_t compressed_block_size_byte =
       ceildiv(max_exp_block_size * bits, CHAR_BIT) + sizeof(ExpType);
+    const std::size_t uint_compressed_size_bit = frsz::detail::get_next_power_of_two_value(bits);
+
     const std::size_t remainder = total_elements % max_exp_block_size;
     return (total_elements / max_exp_block_size) * compressed_block_size_byte +
-           (remainder > 0) * (sizeof(ExpType) + ceildiv(remainder * bits, CHAR_BIT));
+           (remainder > 0) * (sizeof(ExpType) + ceildiv(remainder * bits, uint_compressed_size_bit) *
+                                                  (uint_compressed_size_bit / CHAR_BIT));
   }
 
   int compress_impl(const pressio_data* input, struct pressio_data* output) override
