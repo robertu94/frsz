@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 
@@ -473,13 +474,14 @@ struct frsz2_compressor
 #ifdef __CUDA_ARCH__
   /*
    * max_exp_block_size -- the maximum exponent block size in elements
-   * work_block_size -- Ignored in this kernel
    *
    * Threadblock : Exp_block_size is 1:1
+   * exponent_block_idx must be identical for all threads in a thread block!
    */
-  __device__ static void compress_gpu_function(fp_type const* __restrict__ data,
+  __device__ static void compress_gpu_function(const std::size_t exponent_block_idx,
+                                               const fp_type fp_input_value,
                                                const uint64_t total_elements,
-                                               uint8_t* __restrict__ compressed)
+                                               uint8_t* const __restrict__ compressed)
   {
     constexpr auto min_exp_value =
       std::numeric_limits<typename detail::fp::float_traits<fp_type>::exponent_t>::min();
@@ -500,100 +502,95 @@ struct frsz2_compressor
     auto shared_max_exponent =
       reinterpret_cast<volatile typename detail::fp::float_traits<fp_type>::exponent_t*>(shared_memory);
     auto shared_compressed = reinterpret_cast<volatile uint_compressed_type*>(shared_memory);
-    for (std::size_t exp_block_id = blockIdx.x; exp_block_id < num_exp_blocks; exp_block_id += gridDim.x) {
 
-      const std::size_t global_idx = threadIdx.x + exp_block_id * max_exp_block_size;
-
-      const auto fp_input_value = global_idx < total_elements ? data[global_idx] : 0;
-      // find the max exponent in the block to determine the bias
-      shared_max_exponent[threadIdx.x] = detail::fp::exponent(fp_input_value);
-      __syncthreads();
-      // TODO make it a proper reduction with shuffles
-      // TODO Shared memory usage could be eliminated when max_exp_block_size <=32
-      // TODO specialize syncronization for max_exp_block_size <= 32 (subwarp-sync instead of thread block
-      // sync)
-      for (int i = detail::get_next_power_of_two_value(max_exp_block_size) / 2; i > 0; i >>= 1) {
-        if (threadIdx.x < i) {
-          const auto exp1 = shared_max_exponent[threadIdx.x];
-          const auto exp2 =
-            threadIdx.x + i < max_exp_block_size ? shared_max_exponent[threadIdx.x + i] : min_exp_value;
-          shared_max_exponent[threadIdx.x] = std::max(exp1, exp2);
-        }
-        __syncthreads();
-      }
-      const exp_type max_exp{ shared_max_exponent[0] };
-
-      // preform the scaling
-      const auto exp_value_scaled = detail::fp::floating_to_fixed(fp_input_value, max_exp);
-      static_assert(std::is_unsigned<decltype(exp_value_scaled)>::value,
-                    "exp_value_scaled must be an unsigned type!");
-
-      // compute the exp_block offset
-      std::uint8_t* exp_block_compressed = compressed + exp_block_id * compressed_block_size_byte;
-
-      if (threadIdx.x == 0) {
-        memcpy(exp_block_compressed, &max_exp, sizeof(exp_type));
-      }
-
-      // at this point we have scaled values that we can encode
-      const int output_bit_offset = (threadIdx.x * bits_per_value) % uint_compressed_size_bit;
-      const int output_start_idx = (threadIdx.x * bits_per_value) / uint_compressed_size_bit;
-
-      uint_compressed_type first_val;
-      uint_compressed_type second_val;
-      write_shift_value(output_bit_offset, exp_value_scaled, first_val, second_val);
-      // Set shared memory to all zeros first:
-      for (int i = threadIdx.x;
-           i < ceildiv<int>(max_exp_block_size * bits_per_value, sizeof(uint_compressed_type) * CHAR_BIT);
-           i += blockDim.x) {
-        shared_compressed[i] = 0;
+    // find the max exponent in the block to determine the bias
+    shared_max_exponent[threadIdx.x] = detail::fp::exponent(fp_input_value);
+    __syncthreads();
+    // TODO make it a proper reduction with shuffles
+    // TODO Shared memory usage could be eliminated when max_exp_block_size <=32
+    // TODO specialize syncronization for max_exp_block_size <= 32 (subwarp-sync instead of thread block
+    // sync)
+    for (int i = detail::get_next_power_of_two_value(max_exp_block_size) / 2; i > 0; i >>= 1) {
+      if (threadIdx.x < i) {
+        const auto exp1 = shared_max_exponent[threadIdx.x];
+        const auto exp2 =
+          threadIdx.x + i < max_exp_block_size ? shared_max_exponent[threadIdx.x + i] : min_exp_value;
+        shared_max_exponent[threadIdx.x] = std::max(exp1, exp2);
       }
       __syncthreads();
-      // Note: it is possible to have a 3-way conflict per value (as long as bits_per_value >=4)
-      //       For smaller bits_per_value, more synchronization would be necessary
-      static_assert((uint_compressed_size_bit & (uint_compressed_size_bit - 1)) == 0,
-                    "Bit size of the compressed uint must be a power of 2!");
-      if (output_bit_offset < uint_compressed_size_bit / 2) {
-        shared_compressed[output_start_idx] = first_val;
+    }
+    const exp_type max_exp{ shared_max_exponent[0] };
+
+    // preform the scaling
+    const auto exp_value_scaled = detail::fp::floating_to_fixed(fp_input_value, max_exp);
+    static_assert(std::is_unsigned<decltype(exp_value_scaled)>::value,
+                  "exp_value_scaled must be an unsigned type!");
+
+    // compute the exp_block offset
+    std::uint8_t* exp_block_compressed = compressed + exponent_block_idx * compressed_block_size_byte;
+
+    if (threadIdx.x == 0) {
+      memcpy(exp_block_compressed, &max_exp, sizeof(exp_type));
+    }
+
+    // at this point we have scaled values that we can encode
+    const int output_bit_offset = (threadIdx.x * bits_per_value) % uint_compressed_size_bit;
+    const int output_start_idx = (threadIdx.x * bits_per_value) / uint_compressed_size_bit;
+
+    uint_compressed_type first_val;
+    uint_compressed_type second_val;
+    write_shift_value(output_bit_offset, exp_value_scaled, first_val, second_val);
+    // Set shared memory to all zeros first:
+    for (int i = threadIdx.x;
+         i < ceildiv<int>(max_exp_block_size * bits_per_value, sizeof(uint_compressed_type) * CHAR_BIT);
+         i += blockDim.x) {
+      shared_compressed[i] = 0;
+    }
+    __syncthreads();
+    // Note: it is possible to have a 3-way conflict per value (as long as bits_per_value >=4)
+    //       For smaller bits_per_value, more synchronization would be necessary
+    static_assert((uint_compressed_size_bit & (uint_compressed_size_bit - 1)) == 0,
+                  "Bit size of the compressed uint must be a power of 2!");
+    if (output_bit_offset < uint_compressed_size_bit / 2) {
+      shared_compressed[output_start_idx] = first_val;
+    }
+    __syncthreads();
+    if (bits_per_value != uint_compressed_size_bit) { // should be an if constexpr
+      if (output_bit_offset >= uint_compressed_size_bit / 2) {
+        shared_compressed[output_start_idx] |= first_val;
       }
       __syncthreads();
-      if (bits_per_value != uint_compressed_size_bit) { // should be an if constexpr
-        if (output_bit_offset >= uint_compressed_size_bit / 2) {
-          shared_compressed[output_start_idx] |= first_val;
-        }
-        __syncthreads();
-        // If the second_val is populated (otherwise, the default value for shared_compressed is 0 anyway):
-        if (second_val != 0) {
-          shared_compressed[output_start_idx + 1] |= second_val;
-        }
-        __syncthreads();
+      // If the second_val is populated (otherwise, the default value for shared_compressed is 0 anyway):
+      if (second_val != 0) {
+        shared_compressed[output_start_idx + 1] |= second_val;
       }
-      // if (blockIdx.x == 0) {
-      //   printf("%d: %e / %.4x dissected as %.4x %.4x; shared_mem (idx %d, bit %d): %.4x %.4x\n",
-      //          threadIdx.x,
-      //          double(fp_input_value),
-      //          int(exp_value_scaled),
-      //          int(first_val),
-      //          int(second_val),
-      //          int(output_start_idx),
-      //          int(output_bit_offset),
-      //          int(shared_compressed[output_start_idx]),
-      //          (uint_compressed_size_bit < output_bit_offset + bits_per_value)
-      //            ? int(shared_compressed[output_start_idx + 1])
-      //            : int(0));
-      // }
-      // Now, write out byte for byte since the `compressed` pointer might be not aligned for
-      // uint_compressed_type
-      std::uint8_t* compressed_output = exp_block_compressed + sizeof(exp_type);
-      for (int i = threadIdx.x; i < ceildiv<int>(max_exp_block_size * bits_per_value, CHAR_BIT) &&
-                                exp_block_id * compressed_block_size_byte + i < total_compression_size;
-           i += blockDim.x) {
-        compressed_output[i] = shared_memory[i];
-      }
+      __syncthreads();
+    }
+    // if (blockIdx.x == 0) {
+    //   printf("%d: %e / %.4x dissected as %.4x %.4x; shared_mem (idx %d, bit %d): %.4x %.4x\n",
+    //          threadIdx.x,
+    //          double(fp_input_value),
+    //          int(exp_value_scaled),
+    //          int(first_val),
+    //          int(second_val),
+    //          int(output_start_idx),
+    //          int(output_bit_offset),
+    //          int(shared_compressed[output_start_idx]),
+    //          (uint_compressed_size_bit < output_bit_offset + bits_per_value)
+    //            ? int(shared_compressed[output_start_idx + 1])
+    //            : int(0));
+    // }
+    // Now, write out byte for byte since the `compressed` pointer might be not aligned for
+    // uint_compressed_type
+    std::uint8_t* compressed_output = exp_block_compressed + sizeof(exp_type);
+    for (int i = threadIdx.x; i < ceildiv<int>(max_exp_block_size * bits_per_value, CHAR_BIT) &&
+                              exponent_block_idx * compressed_block_size_byte + i < total_compression_size;
+         i += blockDim.x) {
+      compressed_output[i] = shared_memory[i];
     }
   }
 
-  static __device__ fp_type decompress_gpu_function(fp_type* __restrict__ output,
+  static __device__ fp_type decompress_gpu_function(const std::size_t exponent_block_idx,
                                                     const std::uint64_t total_elements,
                                                     std::uint8_t const* __restrict__ compressed)
   {
@@ -611,69 +608,68 @@ struct frsz2_compressor
 
     // TODO for a good device function, the amount of shared memory needs to be a parameter
     // TODO make the amount of processed exponents block another templated parameter
-    const std::size_t num_exp_blocks = ceildiv<std::size_t>(total_elements, max_exp_block_size);
     const std::size_t compressed_memory_size = compute_compressed_memory_size_byte(total_elements);
     // For now, process 1 exp block per thread block
-    for (std::size_t exp_block_id = blockIdx.x; exp_block_id < num_exp_blocks; exp_block_id += gridDim.x) {
 
-      // TODO FIXME make memcpy for exponent and non-aligned memory accesses; proceed with aligned accesses to
-      //            shared memory
-      const std::uint8_t* exp_block_compressed = compressed + exp_block_id * compressed_block_size_byte;
-      // recover the exponent
-      if (threadIdx.x == 0) {
-        memcpy(shared_block_exponent, exp_block_compressed, sizeof(exp_type));
-      }
-      const std::uint8_t* block_compressed_start = exp_block_compressed + sizeof(exp_type);
-
-      for (int byte_idx = threadIdx.x; byte_idx < ceildiv(max_exp_block_size * bits_per_value, CHAR_BIT);
-           byte_idx += blockDim.x) {
-        // Read everything into shared memory first
-        shared_mem[byte_alignment_block_start + byte_idx] =
-          (byte_idx < compressed_memory_size - exp_block_id * compressed_block_size_byte)
-            ? block_compressed_start[byte_idx]
-            : std::uint8_t{};
-      }
-      __syncthreads();
-
-      // recover the scaled values
-      const int input_bit_offset = (threadIdx.x * bits_per_value) % uint_compressed_size_bit;
-      const int input_idx = (threadIdx.x * bits_per_value) / uint_compressed_size_bit;
-      const auto extracted_compressed_value = retrieve_shift_value(
-        input_bit_offset, shared_compressed[input_idx], shared_compressed[input_idx + 1]);
-
-      const auto output_val =
-        detail::fp::fixed_to_floating<fp_type>(extracted_compressed_value, *shared_block_exponent);
-      // if (blockIdx.x == 0) {
-      //   printf("%d: %e / %.4x reconstructed from %.4x %.4x; shared_mem (idx %d, bit %d): %.4x %.4x\n",
-      //          threadIdx.x,
-      //          double(output_val),
-      //          int(current_compressed_value),
-      //          int(shared_compressed[input_idx]),
-      //          int(shared_compressed[input_idx + 1]),
-      //          int(input_idx),
-      //          int(input_bit_offset),
-      //          int(shared_compressed[input_idx]),
-      //          (uint_compressed_size_bit < input_bit_offset + bits_per_value)
-      //            ? int(shared_compressed[input_idx + 1])
-      //            : int(0));
-      // }
-      // de-scale the values
-      if (threadIdx.x + exp_block_id * max_exp_block_size < total_elements) {
-        output[threadIdx.x + exp_block_id * max_exp_block_size] = output_val;
-        // printf("%d, %d (%d, %d): output[%d] = %e from 0x%llx as 0x%llx exp: %d; idx, offset: %d, %d\n",
-        //        blockIdx.x,
-        //        threadIdx.x,
-        //        gridDim.x,
-        //        blockDim.x,
-        //        int(threadIdx.x + exp_block_id * max_exp_block_size),
-        //        double(output_val),
-        //        std::uint64_t(shared_compressed[input_idx]),
-        //        std::uint64_t(current_compressed_value),
-        //        int(*shared_block_exponent),
-        //        int(input_idx),
-        //        int(input_bit_offset));
-      }
+    // TODO FIXME make memcpy for exponent and non-aligned memory accesses; proceed with aligned accesses
+    // to
+    //            shared memory
+    const std::uint8_t* exp_block_compressed = compressed + exponent_block_idx * compressed_block_size_byte;
+    // recover the exponent
+    if (threadIdx.x == 0) {
+      memcpy(shared_block_exponent, exp_block_compressed, sizeof(exp_type));
     }
+    const std::uint8_t* block_compressed_start = exp_block_compressed + sizeof(exp_type);
+
+    for (int byte_idx = threadIdx.x; byte_idx < ceildiv(max_exp_block_size * bits_per_value, CHAR_BIT);
+         byte_idx += blockDim.x) {
+      // Read everything into shared memory first
+      shared_mem[byte_alignment_block_start + byte_idx] =
+        (byte_idx < compressed_memory_size - exponent_block_idx * compressed_block_size_byte)
+          ? block_compressed_start[byte_idx]
+          : std::uint8_t{};
+    }
+    __syncthreads();
+
+    // recover the scaled values
+    const int input_bit_offset = (threadIdx.x * bits_per_value) % uint_compressed_size_bit;
+    const int input_idx = (threadIdx.x * bits_per_value) / uint_compressed_size_bit;
+    const auto extracted_compressed_value =
+      retrieve_shift_value(input_bit_offset, shared_compressed[input_idx], shared_compressed[input_idx + 1]);
+
+    const auto output_val =
+      detail::fp::fixed_to_floating<fp_type>(extracted_compressed_value, *shared_block_exponent);
+    // if (blockIdx.x == 0) {
+    //   printf("%d: %e / %.4x reconstructed from %.4x %.4x; shared_mem (idx %d, bit %d): %.4x %.4x\n",
+    //          threadIdx.x,
+    //          double(output_val),
+    //          int(current_compressed_value),
+    //          int(shared_compressed[input_idx]),
+    //          int(shared_compressed[input_idx + 1]),
+    //          int(input_idx),
+    //          int(input_bit_offset),
+    //          int(shared_compressed[input_idx]),
+    //          (uint_compressed_size_bit < input_bit_offset + bits_per_value)
+    //            ? int(shared_compressed[input_idx + 1])
+    //            : int(0));
+    // }
+    // de-scale the values
+    // if (threadIdx.x + exponent_block_idx * max_exp_block_size < total_elements) {
+    // output[threadIdx.x + exponent_block_idx * max_exp_block_size] = output_val;
+    //  printf("%d, %d (%d, %d): output[%d] = %e from 0x%llx as 0x%llx exp: %d; idx, offset: %d, %d\n",
+    //         blockIdx.x,
+    //         threadIdx.x,
+    //         gridDim.x,
+    //         blockDim.x,
+    //         int(threadIdx.x + exponent_block_idx * max_exp_block_size),
+    //         double(output_val),
+    //         std::uint64_t(shared_compressed[input_idx]),
+    //         std::uint64_t(current_compressed_value),
+    //         int(*shared_block_exponent),
+    //         int(input_idx),
+    //         int(input_bit_offset));
+    // }
+    return output_val;
   }
 
 #endif // __CUDA_ARCH__
@@ -803,18 +799,39 @@ template<typename Frsz2Compressor>
 __global__ void
 compress_gpu(const typename Frsz2Compressor::fp_type* __restrict__ data,
              const std::size_t total_elements,
-             std::uint8_t* __restrict__ compressed)
+             std::uint8_t* const __restrict__ compressed)
 {
-  Frsz2Compressor::compress_gpu_function(data, total_elements, compressed);
+  // requires that all threads of a thread block take the loop iteration, so there is no synchronization
+  // problem
+  constexpr std::size_t max_exp_blk_size = Frsz2Compressor::max_exp_block_size;
+  for (std::size_t exp_blk_idx = blockIdx.x; exp_blk_idx < ceildiv(total_elements, max_exp_blk_size);
+       exp_blk_idx += gridDim.x) {
+    const auto global_idx = threadIdx.x + exp_blk_idx * max_exp_blk_size;
+
+    Frsz2Compressor::compress_gpu_function(exp_blk_idx,
+                                           global_idx < total_elements ? data[global_idx]
+                                                                       : typename Frsz2Compressor::fp_type{},
+                                           total_elements,
+                                           compressed);
+  }
 }
 
 template<typename Frsz2Compressor>
 __global__ void
-decompress_gpu(typename Frsz2Compressor::fp_type* __restrict__ output,
+decompress_gpu(typename Frsz2Compressor::fp_type* const __restrict__ output,
                const std::size_t total_elements,
-               const std::uint8_t* __restrict__ compressed)
+               const std::uint8_t* const __restrict__ compressed)
 {
-  Frsz2Compressor::decompress_gpu_function(output, total_elements, compressed);
+  constexpr std::size_t max_exp_blk_size = Frsz2Compressor::max_exp_block_size;
+  for (std::size_t exp_blk_idx = blockIdx.x; exp_blk_idx < ceildiv(total_elements, max_exp_blk_size);
+       exp_blk_idx += gridDim.x) {
+    const auto global_idx = threadIdx.x + exp_blk_idx * max_exp_blk_size;
+
+    const auto out = Frsz2Compressor::decompress_gpu_function(exp_blk_idx, total_elements, compressed);
+    if (global_idx < total_elements) {
+      output[global_idx] = out;
+    }
+  }
 }
 
 #endif // __CUDACC__
