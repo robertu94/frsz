@@ -1,6 +1,7 @@
 #include "gtest/gtest.h"
 #include <bit>
 #include <bitset>
+#include <climits>
 #include <cmath>
 #include <frsz.h>
 #include <iomanip>
@@ -8,6 +9,22 @@
 #include <libpressio_ext/cpp/libpressio.h>
 #include <limits>
 #include <vector>
+
+namespace xstd {
+
+template<class To, class From>
+std::enable_if_t<sizeof(To) == sizeof(From) && std::is_trivially_copyable<From>::value &&
+                   std::is_trivially_copyable<To>::value,
+                 To>
+bit_cast(const From& src) noexcept
+{
+  static_assert(std::is_trivially_constructible<To>::value, "Type To must be trivially constructable!");
+  To dest;
+  std::memcpy(&dest, &src, sizeof(From));
+  return dest;
+}
+
+} // namespace xstd
 
 TEST(frsz, integation1)
 {
@@ -43,7 +60,7 @@ template<class T>
 constexpr const int expbits = static_cast<int>(
   8 * sizeof(uint32_t) - std::countl_zero(static_cast<uint32_t>(std::numeric_limits<T>::max_exponent)));
 template<class T>
-constinit const int ebias = ((1 << (expbits<T> - 1)) - 1);
+constexpr const int ebias = ((1 << (expbits<T> - 1)) - 1);
 
 template<class T>
 std::pair<std::vector<scaled_t<T>>, int>
@@ -236,7 +253,7 @@ test_compress(std::vector<InputType> const& scaled,
   unsigned int output_bit_offset = 0;
   unsigned int output_byte_offset = sizeof(int8_t);
   std::vector<uint8_t> result(ceildiv(scaled.size() * bits + sizeof(int8_t) * 8, 8));
-  result[0] = std::bit_cast<uint8_t>(static_cast<int8_t>(e));
+  result[0] = xstd::bit_cast<uint8_t>(static_cast<int8_t>(e));
   for (size_t i = 0; i < scaled.size(); ++i) {
     scaled_t<OutputType> to_store = scaled[i] >> (sizeof(InputType) * 8 - bits);
 
@@ -406,127 +423,144 @@ TEST(frsz2, prototype)
 }
 
 namespace fp {
-    template <class T>
-    struct float_traits {
-    };
-    template <>
-    struct float_traits<float> {
-        using sign_t = bool;
-        using mantissa_t = int8_t;
-        using significand_t = uint32_t;
-        constexpr static int64_t sign_bits = 1;
-        constexpr static int64_t exponent_bits = 8;
-        constexpr static int64_t significand_bits = 23;
-        
-    };
-    template <>
-    struct float_traits<double> {
-        using sign_t = bool;
-        using mantissa_t = int16_t;
-        using significand_t = uint64_t;
-        constexpr static int64_t sign_bits = 1;
-        constexpr static int64_t exponent_bits = 11;
-        constexpr static int64_t significand_bits = 52;
-    };
+template<class T>
+struct float_traits
+{};
+template<>
+struct float_traits<float>
+{
+  using sign_t = bool;
+  using mantissa_t = int8_t;
+  using significand_t = uint32_t;
+  constexpr static int64_t sign_bits = 1;
+  constexpr static int64_t exponent_bits = 8;
+  constexpr static int64_t significand_bits = 23;
+};
+template<>
+struct float_traits<double>
+{
+  using sign_t = bool;
+  using mantissa_t = int16_t;
+  using significand_t = uint64_t;
+  constexpr static int64_t sign_bits = 1;
+  constexpr static int64_t exponent_bits = 11;
+  constexpr static int64_t significand_bits = 52;
+};
 
-    template <class T>
-    typename float_traits<T>::mantissa_t exponent(T f) {
-        constexpr size_t mantissa_shift = float_traits<T>::significand_bits + float_traits<T>::sign_bits;  
-        return (std::bit_cast<scaled_t<T>>(f)>>float_traits<T>::significand_bits & (ones_t<T>::value >> mantissa_shift)) - ebias<T>;
-    }
-    template <class T>
-    typename float_traits<T>::significand_t significand(T f) {
-        scaled_t<T> s = std::bit_cast<scaled_t<T>>(f) & (ones_t<T>::value >> (sizeof(T)*8 -float_traits<T>::significand_bits));
-        if(!(exponent(f) == -ebias<T>)) {
-            //is not subnormal, add leading 1 bit
-            s |= 1ull<<float_traits<T>::significand_bits;
-        }
-        return s;
-    }
-    template <class T>
-    typename float_traits<T>::sign_t sign(T f) {
-        return (std::bit_cast<scaled_t<T>>(f) & (1ull<<(8*sizeof(T)-1)));
-    }
-    inline constexpr bool positive = false;
-    inline constexpr bool negative = true;
+template<class T>
+typename float_traits<T>::mantissa_t
+exponent(T f)
+{
+  constexpr size_t mantissa_shift = float_traits<T>::significand_bits + float_traits<T>::sign_bits;
+  return (xstd::bit_cast<scaled_t<T>>(f) >> float_traits<T>::significand_bits &
+          (ones_t<T>::value >> mantissa_shift)) -
+         ebias<T>;
+}
+template<class T>
+typename float_traits<T>::significand_t
+significand(T f)
+{
+  scaled_t<T> s = xstd::bit_cast<scaled_t<T>>(f) &
+                  (ones_t<T>::value >> (sizeof(T) * 8 - float_traits<T>::significand_bits));
+  if (!(exponent(f) == -ebias<T>)) {
+    // is not subnormal, add leading 1 bit
+    s |= 1ull << float_traits<T>::significand_bits;
+  }
+  return s;
+}
+template<class T>
+typename float_traits<T>::sign_t
+sign(T f)
+{
+  return (xstd::bit_cast<scaled_t<T>>(f) & (1ull << (8 * sizeof(T) - 1)));
+}
+inline constexpr bool positive = false;
+inline constexpr bool negative = true;
 
-    template <class T>
-    int16_t is_normal(T f) {
-        if(!(exponent(f) == -ebias<T>)) {
-            return 1;
-        }
-        return 0;
-    }
-
-    template <class T>
-    scaled_t<T> floating_to_fixed(T floating, int16_t block_exponent) {
-        auto s = sign(floating);
-        auto e = exponent(floating);
-        auto m = significand(floating);
-
-        assert(block_exponent >= e);
-        auto shift = (float_traits<T>::exponent_bits - 1 - (block_exponent - e));
-        scaled_t<T> r;
-        if(-float_traits<T>::significand_bits > shift) {
-            r = 0;
-        } else {
-            r = m<<shift;
-        }
-        if(s) {
-            r |= 1ull<<(sizeof(T)*8 -1);
-        }
-        return r;
-    }
-    template<class F, class T>
-    F fixed_to_floating(T fixed, int16_t block_exponent){
-        static_assert(sizeof(T) == sizeof(F));
-        auto f = fixed & (ones_t<T>::value >> 1);
-        auto z = std::countl_zero(f) - 1; //number of zeros after the sign bit
-        auto shift = - std::min(z, block_exponent + ebias<F>);
-
-        auto s = fixed & 1ull<<(sizeof(T)*8 - 1);
-        auto e = static_cast<uint64_t>(shift + block_exponent + ebias<F>) << float_traits<F>::significand_bits;
-        auto m = f >> (float_traits<F>::exponent_bits - 1 + shift);
-        m = m & (~(scaled_t<T>(1)<<float_traits<F>::significand_bits)); //unset the implicit bit
-        scaled_t<T> r = s | e | m;
-        return std::bit_cast<F>(r);
-    }
+template<class T>
+int16_t
+is_normal(T f)
+{
+  if (!(exponent(f) == -ebias<T>)) {
+    return 1;
+  }
+  return 0;
 }
 
-TEST(frsz2, floating_to_fixed) {
-    float f = 32.0;
-    EXPECT_EQ(fp::significand(f), 1<<23);
-    EXPECT_EQ(fp::exponent(f), 5);
-    EXPECT_EQ(fp::sign(f), fp::positive);
+template<class T>
+scaled_t<T>
+floating_to_fixed(T floating, int16_t block_exponent)
+{
+  auto s = sign(floating);
+  auto e = exponent(floating);
+  auto m = significand(floating);
 
-    float f2 = 0.5;
-    EXPECT_EQ(fp::significand(f2), 1<<23);
-    EXPECT_EQ(fp::exponent(f2), -1);
-    EXPECT_EQ(fp::sign(f2), fp::positive);
+  assert(block_exponent >= e);
+  auto shift = (float_traits<T>::exponent_bits - 1 - (block_exponent - e));
+  scaled_t<T> r;
+  if (-float_traits<T>::significand_bits > shift) {
+    r = 0;
+  } else {
+    r = m << shift;
+  }
+  if (s) {
+    r |= 1ull << (sizeof(T) * 8 - 1);
+  }
+  return r;
+}
+template<class F, class T>
+F
+fixed_to_floating(T fixed, int16_t block_exponent)
+{
+  static_assert(sizeof(T) == sizeof(F));
+  auto f = fixed & (ones_t<T>::value >> 1);
+  auto z = std::countl_zero(f) - 1; // number of zeros after the sign bit
+  auto shift = -std::min(z, block_exponent + ebias<F>);
 
-    double d = 32.0;
-    EXPECT_EQ(fp::significand(d), 1ull<<52);
-    EXPECT_EQ(fp::exponent(d), 5);
-    EXPECT_EQ(fp::sign(d), fp::positive);
+  auto s = fixed & 1ull << (sizeof(T) * 8 - 1);
+  auto e = static_cast<uint64_t>(shift + block_exponent + ebias<F>) << float_traits<F>::significand_bits;
+  auto m = f >> (float_traits<F>::exponent_bits - 1 + shift);
+  m = m & (~(scaled_t<T>(1) << float_traits<F>::significand_bits)); // unset the implicit bit
+  scaled_t<T> r = s | e | m;
+  return xstd::bit_cast<F>(r);
+}
+}
 
-    float sn = 0;
-    EXPECT_EQ(fp::significand(sn), 0);
-    EXPECT_EQ(fp::exponent(sn), -127);
-    EXPECT_EQ(fp::sign(d), fp::positive);
+TEST(frsz2, floating_to_fixed)
+{
+  float f = 32.0;
+  EXPECT_EQ(fp::significand(f), 1 << 23);
+  EXPECT_EQ(fp::exponent(f), 5);
+  EXPECT_EQ(fp::sign(f), fp::positive);
 
-    double snd = 0;
-    EXPECT_EQ(fp::significand(snd), 0);
-    EXPECT_EQ(fp::exponent(snd), -1023);
-    EXPECT_EQ(fp::sign(snd), fp::positive);
+  float f2 = 0.5;
+  EXPECT_EQ(fp::significand(f2), 1 << 23);
+  EXPECT_EQ(fp::exponent(f2), -1);
+  EXPECT_EQ(fp::sign(f2), fp::positive);
 
-    EXPECT_EQ(fp::fixed_to_floating<float>(fp::floating_to_fixed(32.0f, 5),5), 32.0f);
-    EXPECT_EQ(fp::fixed_to_floating<float>(fp::floating_to_fixed(2.0f, 5), 5), 2.0f);
-    EXPECT_EQ(fp::fixed_to_floating<double>(fp::floating_to_fixed(32.0, 5),5), 32.0);
-    EXPECT_EQ(fp::fixed_to_floating<double>(fp::floating_to_fixed(2.0, 5), 5), 2.0);
+  double d = 32.0;
+  EXPECT_EQ(fp::significand(d), 1ull << 52);
+  EXPECT_EQ(fp::exponent(d), 5);
+  EXPECT_EQ(fp::sign(d), fp::positive);
 
-    float subnormal = std::bit_cast<float>(0b0000000001111111111111111111111);
-    float subnormal_5_expected = std::bit_cast<float>(0b00110010100000000000000000000000);
-    EXPECT_EQ(fp::fixed_to_floating<float>(fp::floating_to_fixed(subnormal, 5),5), subnormal_5_expected);
+  float sn = 0;
+  EXPECT_EQ(fp::significand(sn), 0);
+  EXPECT_EQ(fp::exponent(sn), -127);
+  EXPECT_EQ(fp::sign(d), fp::positive);
+
+  double snd = 0;
+  EXPECT_EQ(fp::significand(snd), 0);
+  EXPECT_EQ(fp::exponent(snd), -1023);
+  EXPECT_EQ(fp::sign(snd), fp::positive);
+
+  EXPECT_EQ(fp::fixed_to_floating<float>(fp::floating_to_fixed(32.0f, 5), 5), 32.0f);
+  EXPECT_EQ(fp::fixed_to_floating<float>(fp::floating_to_fixed(2.0f, 5), 5), 2.0f);
+  EXPECT_EQ(fp::fixed_to_floating<double>(fp::floating_to_fixed(32.0, 5), 5), 32.0);
+  EXPECT_EQ(fp::fixed_to_floating<double>(fp::floating_to_fixed(2.0, 5), 5), 2.0);
+
+  float subnormal = xstd::bit_cast<float>(0b0000000001111111111111111111111);
+  float subnormal_5_expected = xstd::bit_cast<float>(0b00110010100000000000000000000000);
+  EXPECT_EQ(fp::fixed_to_floating<float>(fp::floating_to_fixed(subnormal, 5), 5), subnormal_5_expected);
 }
 
 /*
