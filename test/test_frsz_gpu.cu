@@ -308,7 +308,7 @@ print_bytes(const std::uint8_t* bytes, std::size_t size)
   std::cout << std::dec << '\n';
 }
 
-template<std::uint8_t bits_per_value, int max_exp_block_size, class FpType, class ExpType>
+template<int bits_per_value, int max_exp_block_size, class FpType, class ExpType>
 void
 launch_both_compressions(const std::vector<FpType>& flt_vec)
 {
@@ -317,15 +317,18 @@ launch_both_compressions(const std::vector<FpType>& flt_vec)
   //           << '\n';
   Memory<FpType> flt_mem(flt_vec);
   const std::size_t total_elements = flt_mem.get_num_elems();
-  const int num_threads = max_exp_block_size;
-  const int num_blocks = frsz::ceildiv<int>(total_elements, num_threads);
+  constexpr int blocks_per_tb = std::max(1, 512 / max_exp_block_size);
+  const int comp_num_threads = max_exp_block_size;
+  const int comp_num_blocks = frsz::ceildiv<int>(total_elements, comp_num_threads);
+  const int decomp_num_threads = blocks_per_tb * max_exp_block_size;
+  const int decomp_num_blocks = frsz::ceildiv<int>(total_elements, decomp_num_threads);
   const std::size_t compressed_memory_size = frsz2_comp::compute_compressed_memory_size_byte(total_elements);
 
   Memory<std::uint8_t> compressed_mem(compressed_memory_size, 0xFF);
   frsz2_comp::compress_cpu_impl(flt_mem.get_host_const(), total_elements, compressed_mem.get_host());
 
-  frsz::compress_gpu<frsz2_comp>
-    <<<num_blocks, num_threads>>>(flt_mem.get_device_const(), total_elements, compressed_mem.get_device());
+  frsz::compress_gpu<frsz2_comp><<<comp_num_blocks, comp_num_threads>>>(
+    flt_mem.get_device_const(), total_elements, compressed_mem.get_device());
   // std::cout << "Device compressed memory:\n";
   // print_bytes(compressed_mem.get_device_copy().data(), compressed_memory_size);
   // std::cout << "Host compressed memory:\n";
@@ -350,8 +353,8 @@ launch_both_compressions(const std::vector<FpType>& flt_vec)
   std::vector<FpType> overwrite_memory_flt(total_elements, std::numeric_limits<FpType>::infinity());
   flt_mem.set_memory_to(overwrite_memory_flt);
 
-  frsz::decompress_gpu<frsz2_comp>
-    <<<num_blocks, num_threads>>>(flt_mem.get_device(), total_elements, compressed_mem.get_device_const());
+  frsz::decompress_gpu<frsz2_comp, blocks_per_tb><<<decomp_num_blocks, decomp_num_threads>>>(
+    flt_mem.get_device(), total_elements, compressed_mem.get_device_const());
   cudaDeviceSynchronize();
   frsz2_comp::decompress_cpu_impl(flt_mem.get_host(), total_elements, compressed_mem.get_host_const());
   // flt_mem.print_device_host();
@@ -369,10 +372,13 @@ TEST(frsz2_gpu, decompress)
   using f_type = double;
   std::array<double, 9> repeat_vals{ 1., 2., 3., 4., 0.25, -0.25, -0.125, 1 / 32., 0.125 };
   const std::size_t total_size{ 2049 };
+  // const std::size_t total_size{ 49 };
   std::vector<f_type> vect(total_size);
   for (std::size_t i = 0; i < total_size; ++i) {
     vect[i] = repeat_vals[i % repeat_vals.size()];
   }
+  launch_both_compressions<32, 32, f_type, std::int16_t>(vect);
+  launch_both_compressions<16, 32, f_type, std::int16_t>(vect);
   launch_both_compressions<16, 8, f_type, std::int16_t>(vect);
   launch_both_compressions<15, 8, f_type, std::int16_t>(vect);
   launch_both_compressions<9, 8, f_type, std::int16_t>(vect);
@@ -390,287 +396,3 @@ TEST(frsz2_gpu, decompress)
   launch_both_compressions<9, 5, f_type2, std::int8_t>(vect2);
   // launch_both_compressions<4, 8, f_type2, std::int8_t>(vect2);
 }
-
-////////////////////////////////////////////////////////////////////////////////
-
-#if false
-
-template<class T>
-using scaled_t = std::conditional_t<
-  sizeof(T) == 8,
-  uint64_t,
-  std::conditional_t<sizeof(T) == 4, uint32_t, std::conditional_t<sizeof(T) == 2, uint16_t, uint32_t>>>;
-template<size_t N>
-using storage_t = std::conditional_t<
-  (N <= 8),
-  uint8_t,
-  std::conditional_t<(N <= 16), uint16_t, std::conditional_t<(N <= 32), uint32_t, uint64_t>>>;
-
-template<class T>
-constexpr const int expbits = static_cast<int>(
-  8 * sizeof(uint32_t) - std::countl_zero(static_cast<uint32_t>(std::numeric_limits<T>::max_exponent)));
-template<class T>
-constinit const int ebias = ((1 << (expbits<T> - 1)) - 1);
-
-template<class T>
-std::pair<std::vector<scaled_t<T>>, int>
-scale_block(T const* in_begin, T const* in_end)
-{
-  size_t N = std::distance(in_begin, in_end);
-
-  T in_max = 0;
-  for (size_t i = 0; i < N; ++i) {
-    in_max = std::max(in_max, std::fabs(in_begin[i]));
-  }
-
-  int e = -ebias<T>;
-  if (in_max >= std::numeric_limits<T>::min()) {
-    frexp(in_max, &e);
-  }
-  T scale_factor = ldexp(1, (static_cast<int>(CHAR_BIT * sizeof(T)) - 2) - e);
-
-  std::vector<scaled_t<T>> scaled(N);
-  for (size_t i = 0; i < N; ++i) {
-    scaled[i] = static_cast<scaled_t<T>>(scale_factor * in_begin[i]);
-  }
-  return { scaled, e };
-}
-
-template<class T>
-std::vector<T>
-restore_block(scaled_t<T> const* begin, scaled_t<T> const* end, int expmax)
-{
-  size_t N = std::distance(begin, end);
-  std::vector<T> out(N);
-  T scale_factor = ldexp(1, expmax - (static_cast<int>(CHAR_BIT * sizeof(T)) - 2));
-  for (size_t i = 0; i < N; ++i) {
-    out[i] = begin[i] * scale_factor;
-  }
-
-  return out;
-}
-
-template<class OutputType>
-struct expected_offset_t
-{
-  size_t byte;
-  size_t bit;
-  OutputType to_store;
-  OutputType first_store;
-  size_t first_output_shift;
-  size_t first_output_bits;
-  std::optional<OutputType> second_store;
-  std::optional<size_t> second_shift;
-};
-
-template<uint8_t bits, class InputType, class OutputType>
-std::vector<uint8_t>
-test_compress(std::vector<InputType> const& scaled,
-              int8_t const e,
-              std::vector<expected_offset_t<OutputType>> const& expected_offsets)
-{
-  unsigned int output_bit_offset = 0;
-  unsigned int output_byte_offset = sizeof(int8_t);
-  std::vector<uint8_t> result(ceildiv(scaled.size() * bits + sizeof(int8_t) * 8, 8));
-  result[0] = std::bit_cast<uint8_t>(static_cast<int8_t>(e));
-  for (size_t i = 0; i < scaled.size(); ++i) {
-    scaled_t<OutputType> to_store = scaled[i] >> (sizeof(InputType) * 8 - bits);
-
-    // we do this dance to avoid an unaligned load
-    uint8_t* out = result.data() + output_byte_offset;
-    uint8_t copy_size =
-      (bits + output_bit_offset > 8 * sizeof(OutputType)) ? 2 * sizeof(OutputType) : sizeof(OutputType);
-    OutputType temp[2] = { 0, 0 };
-    memcpy(temp, out, copy_size);
-
-    EXPECT_EQ(expected_offsets[i].byte, output_byte_offset)
-      << "bits " << static_cast<int>(bits) << " index " << i;
-    EXPECT_EQ(expected_offsets[i].bit, output_bit_offset)
-      << "bits " << static_cast<int>(bits) << " index " << i;
-    EXPECT_EQ(expected_offsets[i].to_store, to_store) << "bits " << static_cast<int>(bits) << " index " << i;
-    // write everything from offset to output_type boundary
-    uint8_t first_output_shift;
-    uint8_t first_output_bits;
-    if (bits + output_bit_offset > 8 * sizeof(OutputType)) {
-      first_output_shift = 0;
-      first_output_bits = 8 * sizeof(OutputType) - output_bit_offset;
-    } else {
-      first_output_shift = 8 * sizeof(OutputType) - (bits + output_bit_offset);
-      first_output_bits = bits;
-    }
-    EXPECT_EQ(expected_offsets[i].first_output_bits, first_output_bits)
-      << "bits " << static_cast<int>(bits) << " index " << i;
-    EXPECT_EQ(expected_offsets[i].first_output_shift, first_output_shift)
-      << "bits " << static_cast<int>(bits) << " index " << i;
-
-    OutputType first_store = (to_store >> (bits - first_output_bits) &
-                              (ones_t<OutputType>::value >> (8 * sizeof(OutputType) - first_output_bits)))
-                             << first_output_shift;
-    EXPECT_EQ(expected_offsets[i].first_store, first_store)
-      << "bits " << static_cast<int>(bits) << " index " << i;
-    temp[0] |= first_store; // TODO
-
-    // if there are leftovers, write those to the high-order bytes
-    if (bits + output_bit_offset > 8 * sizeof(OutputType)) {
-      uint8_t remaining = bits - first_output_bits;
-      uint8_t second_shift = 8 * sizeof(OutputType) - remaining;
-      OutputType second_store =
-        (to_store & (ones_t<OutputType>::value >> (8 * sizeof(OutputType) - remaining))) << second_shift;
-      temp[1] |= second_store;
-      EXPECT_EQ(expected_offsets[i].second_store, second_store)
-        << "bits " << static_cast<int>(bits) << " index " << i;
-      EXPECT_EQ(expected_offsets[i].second_shift, second_shift)
-        << "bits " << static_cast<int>(bits) << " index " << i;
-    } else {
-      EXPECT_EQ(expected_offsets[i].second_store, std::optional<size_t>{})
-        << "bits " << static_cast<int>(bits) << " index " << i;
-      EXPECT_EQ(expected_offsets[i].second_shift, std::optional<size_t>{})
-        << "bits " << static_cast<int>(bits) << " index " << i;
-    }
-
-    // copy it back
-    memcpy(out, temp, copy_size);
-
-    output_byte_offset += (bits + output_bit_offset) / 8;
-    output_bit_offset = (output_bit_offset + bits) % 8;
-  }
-
-  return result;
-}
-
-template<class OutputType>
-struct expected_offsets_decompress_t
-{
-  OutputType loaded;
-};
-
-template<uint8_t bits, class OutputType>
-std::vector<OutputType>
-test_decompress(std::vector<uint8_t> const& input,
-                size_t N,
-                std::vector<expected_offsets_decompress_t<OutputType>> const& expected_offsets)
-{
-  using InputType = storage_t<bits>;
-  size_t bit_offset = 0;
-  size_t byte_offset = sizeof(int8_t);
-  std::vector<OutputType> ret(N);
-
-  for (size_t i = 0; i < N; ++i) {
-    InputType tmp[2] = { 0, 0 };
-    uint16_t copy_size =
-      (bits + bit_offset > 8 * sizeof(InputType)) ? 2 * sizeof(InputType) : sizeof(InputType);
-    memcpy(tmp, input.data() + byte_offset, copy_size);
-    ret[i] = shift_left<OutputType>(tmp, bits, bit_offset);
-    EXPECT_EQ(ret[i], expected_offsets[i].loaded)
-      << "decompress bits " << static_cast<int>(bits) << " offset " << i;
-
-    byte_offset += (bit_offset + bits) / 8;
-    bit_offset = (bit_offset + bits) % 8;
-  }
-
-  return ret;
-}
-
-TEST(frsz2, prototype)
-{
-  std::array f{ 1.0f, 2.0f, 2.33f, 4.0f, 8.0f, 16.0f, 32.0f };
-  auto const& [scaled, e] = scale_block(f.data(), f.data() + f.size());
-  auto restored = restore_block<float>(scaled.data(), scaled.data() + scaled.size(), e);
-  for (size_t i = 0; i < f.size(); ++i) {
-    EXPECT_LT(std::abs(f[i] - restored[i]), .01);
-  }
-  static_assert(sizeof(storage_t<32>) == 4, "test");
-
-  {
-    constexpr size_t bits = 16;
-    std::vector<expected_offset_t<storage_t<bits>>> expected_offsets{
-      { 1, 0, 0x0100, 0x0100, 0, 16, {}, {} },  { 3, 0, 0x0200, 0x0200, 0, 16, {}, {} },
-      { 5, 0, 0x0254, 0x0254, 0, 16, {}, {} },  { 7, 0, 0x0400, 0x0400, 0, 16, {}, {} },
-      { 9, 0, 0x0800, 0x0800, 0, 16, {}, {} },  { 11, 0, 0x1000, 0x1000, 0, 16, {}, {} },
-      { 13, 0, 0x2000, 0x2000, 0, 16, {}, {} },
-    };
-    auto result = test_compress<bits>(scaled, static_cast<int8_t>(e), expected_offsets);
-    std::vector<expected_offsets_decompress_t<scaled_t<float>>> expected_decompress{
-      { 0x01000000 }, { 0x02000000 }, { 0x02540000 }, { 0x04000000 },
-      { 0x08000000 }, { 0x10000000 }, { 0x20000000 }
-    };
-    test_decompress<bits>(result, scaled.size(), expected_decompress);
-  }
-
-  {
-    constexpr size_t bits = 8;
-    std::vector<expected_offset_t<storage_t<bits>>> expected_offsets{
-      { 1, 0, 0x01, 0x01, 0, 8, {}, {} }, { 2, 0, 0x02, 0x02, 0, 8, {}, {} },
-      { 3, 0, 0x02, 0x02, 0, 8, {}, {} }, { 4, 0, 0x04, 0x04, 0, 8, {}, {} },
-      { 5, 0, 0x08, 0x08, 0, 8, {}, {} }, { 6, 0, 0x10, 0x10, 0, 8, {}, {} },
-      { 7, 0, 0x20, 0x20, 0, 8, {}, {} },
-    };
-    std::vector<expected_offsets_decompress_t<scaled_t<float>>> expected_decompress{
-      { 0x01000000 }, { 0x02000000 }, { 0x02000000 }, { 0x04000000 },
-      { 0x08000000 }, { 0x10000000 }, { 0x20000000 }
-    };
-    auto result = test_compress<bits>(scaled, static_cast<int8_t>(e), expected_offsets);
-    test_decompress<bits>(result, scaled.size(), expected_decompress);
-  }
-
-  {
-    constexpr size_t bits = 5;
-    // clang-format off
-      std::vector<expected_offset_t<storage_t<bits>>> expected_offsets {
-        /* i,   byte, bit, to_store, 1_store, 1_shift, 1_bits, 2_store,    2_shift */
-         /*0*/ {1,    0,   0b00000,  0b00000, 3,       5,      {},         {}      },
-         /*1*/ {1,    5,   0b00000,  0b00000, 0,       3,      0b00000000, 6      },
-         /*2*/ {2,    2,   0b00000,  0b00000, 1,       5,      {},         {}      },
-         /*3*/ {2,    7,   0b00000,  0b00000, 0,       1,      0b00000000, 4      },
-         /*4*/ {3,    4,   0b00001,  0b00000, 0,       4,      0b10000000, 7      },
-         /*5*/ {4,    1,   0b00010,  0b01000, 2,       5,      {},         {}      },
-         /*6*/ {4,    6,   0b00100,  0b00000, 0,       2,      0b10000000, 5      },
-      };
-      std::vector<expected_offsets_decompress_t<scaled_t<float>>> expected_decompress {
-          {0b00000000000000000000000000000000},
-          {0b00000000000000000000000000000000},
-          {0b00000000000000000000000000000000},
-          {0b00000000000000000000000000000000},
-          {0b00001000000000000000000000000000},
-          {0b00010000000000000000000000000000},
-          {0b00100000000000000000000000000000}
-      };
-    // clang-format on
-    auto result = test_compress<bits>(scaled, static_cast<int8_t>(e), expected_offsets);
-    test_decompress<bits>(result, scaled.size(), expected_decompress);
-  }
-}
-
-/*
-TEST(frsz2, integation1)
-{
-  register_frsz();
-
-  std::vector<double> f{
-    10.0, 20.0, 30.0,  20.0, 11.0, 12.0, 13.0, 14.0,
-
-    40.0, 80.0, 120.0, 80.0, 41.0, 48.0, 42.0, 44.0,
-  };
-  pressio_data in = pressio_data::copy(pressio_double_dtype, f.data(), { f.size() });
-  pressio_data out = pressio_data::owning(pressio_double_dtype, { f.size() });
-  pressio_data compressed = pressio_data::owning(pressio_byte_dtype, { f.size() });
-
-  pressio library;
-  pressio_compressor c = library.get_compressor("frsz2");
-  c->set_options({
-    { "frsz2:bits", uint64_t{ 32 } },
-    { "frsz2:max_exp_block_size", uint64_t{ 8 } },
-    { "frsz2:max_work_block_size", uint64_t{ 4 } },
-  });
-  c->compress(&in, &compressed);
-  c->decompress(&compressed, &out);
-
-  auto f_out = static_cast<float*>(out.data());
-  for (size_t i = 0; i < f.size(); ++i) {
-      EXPECT_LT(std::fabs(f_out[i] - f[i]), 1e-3);
-  }
-
-}
-*/
-
-#endif
