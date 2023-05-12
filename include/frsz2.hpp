@@ -127,12 +127,79 @@ bit_cast(const From& src) noexcept
   return detail::bit_cast_impl<To>(src);
 }
 
-// TODO call device function internally
+
+namespace detail {
+
+#if defined(__CUDA_ARCH__)
+__device__ int countl_zero(std::uint64_t val) noexcept
+{
+  static_assert(sizeof(long long int) == sizeof(std::uint64_t), "Sizes must match!");
+  return __clzll(val);
+}
+__device__ int countl_zero(std::uint32_t val) noexcept
+{
+  static_assert(sizeof(int) == sizeof(std::uint32_t), "Sizes must match!");
+  return __clz(val);
+}
+__device__ int countl_zero(std::uint16_t val) noexcept
+{
+  return __clz(val) - 16;
+}
+__device__ int countl_zero(std::uint8_t val) noexcept
+{
+  return __clz(val) - 24;
+}
+
+#else  // !defined(__CUDA_ARCH__)
+
+#if defined(__has_builtin)
+#if __has_builtin(__builtin_clzll)
+int countl_zero(unsigned long long val) noexcept
+{
+  return val == 0 ? CHAR_BIT * sizeof(unsigned long long) : __builtin_clzll(val);
+}
+#endif
+#if __has_builtin(__builtin_clzl)
+int countl_zero(unsigned long int val) noexcept
+{
+  return val == 0 ? CHAR_BIT * sizeof(unsigned int) : __builtin_clzl(val);
+}
+#endif
+#if __has_builtin(__builtin_clz)
+int countl_zero(unsigned int val) noexcept
+{
+  return val == 0 ? CHAR_BIT * sizeof(unsigned int) : __builtin_clz(val);
+}
+int countl_zero(std::uint16_t val) noexcept
+{
+  return __builtin_clz(val) - (CHAR_BIT * (sizeof(unsigned int) - sizeof(std::uint16_t)));
+}
+int countl_zero(std::uint8_t val) noexcept
+{
+  return __builtin_clz(val) - (CHAR_BIT * (sizeof(unsigned int) - sizeof(std::uint8_t)));
+}
+#endif
+#else
+#warning "no __has_builtin"
+// default implementation
 template<class T>
-constexpr FRSZ_ATTRIBUTES std::enable_if_t<std::is_integral<T>::value && std::is_unsigned<T>::value, int>
+FRSZ_ATTRIBUTES std::enable_if_t<std::is_integral<T>::value && std::is_unsigned<T>::value, int>
 countl_zero(T val) noexcept
 {
   return val == 0 ? sizeof(T) * CHAR_BIT : countl_zero(val >> 1) - 1;
+}
+#endif // defined(__has_builtin)
+
+#endif // defined(__CUDA_ARCH__)
+
+} // namespace detail
+
+// TODO call device function internally
+template<class T>
+FRSZ_ATTRIBUTES std::enable_if_t<std::is_integral<T>::value && std::is_unsigned<T>::value, int>
+countl_zero(T val) noexcept
+{
+  return detail::countl_zero(val);
 }
 
 } // namespace xstd
@@ -470,6 +537,9 @@ struct frsz2_compressor
                    : uint_compressed_type{};
   }
 
+// TODO remove majority of shared memory when bits_per_value is power of 2
+// TODO maybe let every thread read only the data it needs to without putting it into shared memory
+// TODO simplify decompression code significantly (maybe also the compression code)
 #ifdef __CUDA_ARCH__
   /*
    * max_exp_block_size -- the maximum exponent block size in elements
