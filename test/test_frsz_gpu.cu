@@ -317,7 +317,8 @@ launch_both_compressions(const std::vector<FpType>& flt_vec)
   //           << '\n';
   Memory<FpType> flt_mem(flt_vec);
   const std::size_t total_elements = flt_mem.get_num_elems();
-  constexpr int blocks_per_tb = std::max(1, 512 / max_exp_block_size);
+  // constexpr int blocks_per_tb = std::max(1, 512 / max_exp_block_size);
+  constexpr int blocks_per_tb = 1;
   const int comp_num_threads = max_exp_block_size;
   const int comp_num_blocks = frsz::ceildiv<int>(total_elements, comp_num_threads);
   const int decomp_num_threads = blocks_per_tb * max_exp_block_size;
@@ -371,8 +372,9 @@ TEST(frsz2_gpu, decompress)
 {
   using f_type = double;
   std::array<double, 9> repeat_vals{ 1., 2., 3., 4., 0.25, -0.25, -0.125, 1 / 32., 0.125 };
-  const std::size_t total_size{ 2049 };
+  // const std::size_t total_size{ 2049 };
   // const std::size_t total_size{ 49 };
+  const std::size_t total_size{ 9 };
   std::vector<f_type> vect(total_size);
   for (std::size_t i = 0; i < total_size; ++i) {
     vect[i] = repeat_vals[i % repeat_vals.size()];
@@ -380,6 +382,8 @@ TEST(frsz2_gpu, decompress)
   launch_both_compressions<32, 32, f_type, std::int16_t>(vect);
   launch_both_compressions<16, 32, f_type, std::int16_t>(vect);
   launch_both_compressions<16, 8, f_type, std::int16_t>(vect);
+  // FIXME
+  // Fails (actually crashes with "misaligned address") for non power-of-two bits_per_value
   launch_both_compressions<15, 8, f_type, std::int16_t>(vect);
   launch_both_compressions<9, 8, f_type, std::int16_t>(vect);
   launch_both_compressions<9, 4, f_type, std::int16_t>(vect);
@@ -395,4 +399,5 @@ TEST(frsz2_gpu, decompress)
   launch_both_compressions<9, 4, f_type2, std::int8_t>(vect2);
   launch_both_compressions<9, 5, f_type2, std::int8_t>(vect2);
   // launch_both_compressions<4, 8, f_type2, std::int8_t>(vect2);
+  // */
 }

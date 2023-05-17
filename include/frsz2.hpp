@@ -127,54 +127,62 @@ bit_cast(const From& src) noexcept
   return detail::bit_cast_impl<To>(src);
 }
 
-
 namespace detail {
 
 #if defined(__CUDA_ARCH__)
-__device__ int countl_zero(std::uint64_t val) noexcept
+__device__ int
+countl_zero(std::uint64_t val) noexcept
 {
   static_assert(sizeof(long long int) == sizeof(std::uint64_t), "Sizes must match!");
   return __clzll(val);
 }
-__device__ int countl_zero(std::uint32_t val) noexcept
+__device__ int
+countl_zero(std::uint32_t val) noexcept
 {
   static_assert(sizeof(int) == sizeof(std::uint32_t), "Sizes must match!");
   return __clz(val);
 }
-__device__ int countl_zero(std::uint16_t val) noexcept
+__device__ int
+countl_zero(std::uint16_t val) noexcept
 {
   return __clz(val) - 16;
 }
-__device__ int countl_zero(std::uint8_t val) noexcept
+__device__ int
+countl_zero(std::uint8_t val) noexcept
 {
   return __clz(val) - 24;
 }
 
-#else  // !defined(__CUDA_ARCH__)
+#else // !defined(__CUDA_ARCH__)
 
 #if defined(__has_builtin)
 #if __has_builtin(__builtin_clzll)
-int countl_zero(unsigned long long val) noexcept
+int
+countl_zero(unsigned long long val) noexcept
 {
   return val == 0 ? CHAR_BIT * sizeof(unsigned long long) : __builtin_clzll(val);
 }
 #endif
 #if __has_builtin(__builtin_clzl)
-int countl_zero(unsigned long int val) noexcept
+int
+countl_zero(unsigned long int val) noexcept
 {
   return val == 0 ? CHAR_BIT * sizeof(unsigned int) : __builtin_clzl(val);
 }
 #endif
 #if __has_builtin(__builtin_clz)
-int countl_zero(unsigned int val) noexcept
+int
+countl_zero(unsigned int val) noexcept
 {
   return val == 0 ? CHAR_BIT * sizeof(unsigned int) : __builtin_clz(val);
 }
-int countl_zero(std::uint16_t val) noexcept
+int
+countl_zero(std::uint16_t val) noexcept
 {
   return __builtin_clz(val) - (CHAR_BIT * (sizeof(unsigned int) - sizeof(std::uint16_t)));
 }
-int countl_zero(std::uint8_t val) noexcept
+int
+countl_zero(std::uint8_t val) noexcept
 {
   return __builtin_clz(val) - (CHAR_BIT * (sizeof(unsigned int) - sizeof(std::uint8_t)));
 }
@@ -371,21 +379,21 @@ fixed_to_floating(T fixed, std::int16_t block_exponent)
 // Note: this only works for (a * b > 0) and b != 0
 template<class T>
 constexpr T
-ceildiv(const T& a, const T& b)
+ceildiv(const T a, const T b)
 {
   return a / b + (a % b != 0);
 }
 
 template<class T>
 FRSZ_ATTRIBUTES T
-abs(const T& val)
+abs(const T val)
 {
   return std::abs(val);
 }
 
 template<>
 FRSZ_ATTRIBUTES float
-abs(const float& val)
+abs(const float val)
 {
 #if defined(__CUDA_ARCH__)
   return fabsf(val);
@@ -396,7 +404,7 @@ abs(const float& val)
 
 template<>
 FRSZ_ATTRIBUTES double
-abs(const double& val)
+abs(const double val)
 {
 #if defined(__CUDA_ARCH__)
   return fabs(val);
@@ -441,7 +449,7 @@ struct frsz2_compressor
   constexpr static auto bits_per_value = bits_per_value_;
   constexpr static auto max_exp_block_size = max_exp_block_size_;
   using fp_type = FpType_;
-  using exp_type = ExpType_;
+  using exp_type = std::make_signed_t<detail::storage_t<bits_per_value>>; // ExpType_;
   static_assert(bits_per_value <= sizeof(fp_type) * CHAR_BIT,
                 "The number of bits per compressed value must be smaller (or equal to) the size of the "
                 "original value type!");
@@ -668,57 +676,46 @@ struct frsz2_compressor
     static_assert(0 < max_exp_block_size && max_exp_block_size <= 1024,
                   "Requirement: 0 < max_exp_block_size <= 1024");
 
-    // TODO figure out a better way to divide work instead of work_block_size
-    // TODO make fool-proof alignment
-    constexpr int byte_alignment_block_start =
-      std::max(std::alignment_of<uint_compressed_type>::value, sizeof(exp_type));
-    constexpr int shared_memory_per_exp_block_size_byte =
-      byte_alignment_block_start + compressed_block_size_byte +
-      (byte_alignment_block_start + compressed_block_size_byte) % byte_alignment_block_start;
+    static_assert(std::alignment_of<uint_compressed_type>::value == std::alignment_of<exp_type>::value,
+                  "Alignment must match!");
+    static_assert(sizeof(uint_compressed_type) == sizeof(exp_type), "Sizes must match!");
 
-    static_assert(blocks_per_tb <= 1 ||
-                    shared_memory_per_exp_block_size_byte % byte_alignment_block_start == 0,
-                  "Alignment for the next exponent must fit!");
+    constexpr int shared_mem_elems_per_block = max_exp_block_size + 1; // TODO not really accurate
+    constexpr int uint_elems_per_block = ceildiv(max_exp_block_size * bits_per_value, CHAR_BIT);
 
     const int local_block_idx = threadIdx.x / max_exp_block_size;
     const int local_element_idx = threadIdx.x % max_exp_block_size;
+    const std::size_t global_element_idx = exponent_block_idx * max_exp_block_size + threadIdx.x;
 
-    __shared__ std::uint8_t shared_mem[blocks_per_tb * shared_memory_per_exp_block_size_byte];
+    __shared__ uint_compressed_type shared_mem[blocks_per_tb * shared_mem_elems_per_block];
 
     const auto shared_block_exponent =
-      reinterpret_cast<exp_type*>(shared_mem + local_block_idx * shared_memory_per_exp_block_size_byte);
-    const auto shared_compressed = reinterpret_cast<uint_compressed_type*>(
-      shared_mem + local_block_idx * shared_memory_per_exp_block_size_byte + byte_alignment_block_start);
+      reinterpret_cast<exp_type*>(shared_mem + local_block_idx * shared_mem_elems_per_block);
+    const auto shared_compressed =
+      reinterpret_cast<uint_compressed_type*>(shared_mem + local_block_idx * shared_mem_elems_per_block + 1);
 
-    // TODO for a good device function, the amount of shared memory needs to be a parameter
-    // TODO make the amount of processed exponents block another templated parameter
-    const std::size_t total_compressed_memory_size = compute_compressed_memory_size_byte(total_elements);
-
-    // TODO FIXME make memcpy for exponent and non-aligned memory accesses; proceed with aligned accesses to
-    //            shared memory
-    const std::uint8_t* const exp_block_compressed =
-      compressed + (exponent_block_idx + local_block_idx) * compressed_block_size_byte;
+    const exp_type* const exp_block_compressed = reinterpret_cast<const exp_type*>(
+      compressed + (exponent_block_idx + local_block_idx) * compressed_block_size_byte);
     // recover the exponent
     if (local_element_idx == 0) {
-      if ((exponent_block_idx + local_block_idx) * compressed_block_size_byte <
-          total_compressed_memory_size) {
-        memcpy(shared_block_exponent, exp_block_compressed, sizeof(exp_type));
-      } else {
-        *shared_block_exponent = 0;
-      }
+      *shared_block_exponent = (global_element_idx < total_elements) ? *exp_block_compressed : 0;
     }
-    const std::uint8_t* const block_compressed_start = exp_block_compressed + sizeof(exp_type);
+    const uint_compressed_type* const block_compressed_start =
+      reinterpret_cast<const uint_compressed_type*>(exp_block_compressed + 1);
 
-    for (int byte_idx = local_element_idx; byte_idx < ceildiv(max_exp_block_size * bits_per_value, CHAR_BIT);
-         byte_idx += max_exp_block_size) {
-      // Read everything into shared memory first
-      shared_mem[local_block_idx * shared_memory_per_exp_block_size_byte + byte_alignment_block_start +
-                 byte_idx] =
-        (byte_idx <
-         total_compressed_memory_size - (exponent_block_idx + local_block_idx) * compressed_block_size_byte)
-          ? block_compressed_start[byte_idx]
-          : std::uint8_t{};
-    }
+    // const std::size_t last_global_idx_to_read =
+    //   (total_elements / max_exp_block_size) * max_exp_block_size +
+    //   ceildiv<int>((total_elements % max_exp_block_size) * bits_per_value, uint_compressed_size_bit);
+    // Read everything into shared memory first
+    shared_compressed[local_element_idx] =
+      // If we have a power-of-two number of bits, it is easy to figure out which thread reads what
+      ((bits_per_value == uint_compressed_size_bit && global_element_idx < total_elements) ||
+       // However, if it does not fit, we need to make sure we don't read too much
+       // TODO does not really work for non-power-of-two bits_per_value
+       (bits_per_value != uint_compressed_size_bit && local_element_idx < uint_elems_per_block &&
+        global_element_idx < /*last_global_idx_to_read*/ total_elements))
+        ? block_compressed_start[local_element_idx]
+        : uint_compressed_type{};
     __syncthreads();
 
     // recover the scaled values
@@ -729,14 +726,19 @@ struct frsz2_compressor
 
     const auto output_val =
       detail::fp::fixed_to_floating<fp_type>(extracted_compressed_value, *shared_block_exponent);
-    // if (blockIdx.x <= 1) {
-    //   printf("%d-%d: %e / %.4x reconstructed from %.4x %.4x; shared_mem (idx %d, bit %d): %.4x %.4x\n",
-    //          blockIdx.x,
-    //          threadIdx.x,
+    // if (blockIdx.x < 1 && threadIdx.x >= 0 * max_exp_block_size && threadIdx.x < 49) {
+    //   printf("%d-%d [glob: %d -- loc: %d-%d]: %e / %.16lx reconstructed from %.4x %.4x exp: %.4x;"
+    //          " shared_mem (idx %d, bit %d): %.4x %.4x\n",
+    //          int(blockIdx.x),
+    //          int(threadIdx.x),
+    //          int(global_element_idx),
+    //          int(local_block_idx),
+    //          int(local_element_idx),
     //          double(output_val),
-    //          int(extracted_compressed_value),
+    //          long(extracted_compressed_value),
     //          int(shared_compressed[input_idx]),
     //          int(shared_compressed[input_idx + 1]),
+    //          int(*shared_block_exponent),
     //          int(input_idx),
     //          int(input_bit_offset),
     //          int(shared_compressed[input_idx]),
