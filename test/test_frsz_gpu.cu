@@ -313,12 +313,12 @@ void
 launch_both_compressions(const std::vector<FpType>& flt_vec)
 {
   using frsz2_comp = frsz::frsz2_compressor<bits_per_value, max_exp_block_size, FpType, ExpType>;
-  // std::cout << "Test with " << int(bits_per_value) << "bits; Exponent block size: " << max_exp_block_size
-  //           << '\n';
+  std::cout << "Test with " << int(bits_per_value) << "bits; Exponent block size: " << max_exp_block_size
+            << '\n';
   Memory<FpType> flt_mem(flt_vec);
   const std::size_t total_elements = flt_mem.get_num_elems();
-  // constexpr int blocks_per_tb = std::max(1, 512 / max_exp_block_size);
-  constexpr int blocks_per_tb = 1;
+  constexpr int blocks_per_tb = std::max(1, 512 / max_exp_block_size);
+  // constexpr int blocks_per_tb = 1;
   const int comp_num_threads = max_exp_block_size;
   const int comp_num_blocks = frsz::ceildiv<int>(total_elements, comp_num_threads);
   const int decomp_num_threads = blocks_per_tb * max_exp_block_size;
@@ -350,11 +350,14 @@ launch_both_compressions(const std::vector<FpType>& flt_vec)
   // EXPECT_TRUE(compressed_mem.is_device_matching_host());
   // compressed_mem.to_device();
   // compressed_mem.to_host();
+  if ((bits_per_value == 15 || bits_per_value == 16) && max_exp_block_size == 8) {
+    print_bytes(compressed_mem.get_host(), compressed_memory_size);
+  }
 
   std::vector<FpType> overwrite_memory_flt(total_elements, std::numeric_limits<FpType>::infinity());
   flt_mem.set_memory_to(overwrite_memory_flt);
 
-  frsz::decompress_gpu<frsz2_comp, blocks_per_tb><<<decomp_num_blocks, decomp_num_threads>>>(
+  frsz::decompress_gpu<frsz2_comp><<<decomp_num_blocks, decomp_num_threads>>>(
     flt_mem.get_device(), total_elements, compressed_mem.get_device_const());
   cudaDeviceSynchronize();
   frsz2_comp::decompress_cpu_impl(flt_mem.get_host(), total_elements, compressed_mem.get_host_const());
