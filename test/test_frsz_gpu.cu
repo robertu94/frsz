@@ -313,11 +313,11 @@ print_bytes(const std::uint8_t* bytes, std::size_t size)
   std::cout << std::dec << '\n';
 }
 
-template<int bits_per_value, int max_exp_block_size, class FpType, class ExpType>
+template<int bits_per_value, int max_exp_block_size, class FpType>
 void
 launch_both_compressions(const std::vector<FpType>& flt_vec)
 {
-  using frsz2_comp = frsz::frsz2_compressor<bits_per_value, max_exp_block_size, FpType, ExpType>;
+  using frsz2_comp = frsz::frsz2_compressor<bits_per_value, max_exp_block_size, FpType>;
   // std::cout << "Test with " << int(bits_per_value) << "bits; Exponent block size: " << max_exp_block_size
   //           << '\n';
   Memory<FpType> flt_mem(flt_vec);
@@ -386,39 +386,34 @@ TEST(frsz2_gpu, decompress)
   for (std::size_t i = 0; i < total_size; ++i) {
     vect[i] = repeat_vals[i % repeat_vals.size()];
   }
-  launch_both_compressions<32, 32, f_type, std::int16_t>(vect);
-  launch_both_compressions<16, 32, f_type, std::int16_t>(vect);
-  launch_both_compressions<16, 8, f_type, std::int16_t>(vect);
-  launch_both_compressions<15, 8, f_type, std::int16_t>(vect);
-  launch_both_compressions<9, 8, f_type, std::int16_t>(vect);
-  launch_both_compressions<9, 4, f_type, std::int16_t>(vect);
-  launch_both_compressions<9, 5, f_type, std::int16_t>(vect);
+  launch_both_compressions<32, 32, f_type>(vect);
+  launch_both_compressions<16, 32, f_type>(vect);
+  launch_both_compressions<16, 8, f_type>(vect);
+  launch_both_compressions<15, 8, f_type>(vect);
+  launch_both_compressions<9, 8, f_type>(vect);
+  launch_both_compressions<9, 4, f_type>(vect);
+  launch_both_compressions<9, 5, f_type>(vect);
 
   using f_type2 = float;
   std::vector<f_type2> vect2(total_size + 111);
   for (std::size_t i = 0; i < vect2.size(); ++i) {
     vect2[i] = repeat_vals[i % repeat_vals.size()];
   }
-  launch_both_compressions<16, 8, f_type2, std::int16_t>(vect2);
-  launch_both_compressions<15, 8, f_type2, std::int8_t>(vect2);
-  launch_both_compressions<9, 4, f_type2, std::int8_t>(vect2);
-  launch_both_compressions<9, 5, f_type2, std::int8_t>(vect2);
-  // launch_both_compressions<4, 8, f_type2, std::int8_t>(vect2);
+  launch_both_compressions<16, 8, f_type2>(vect2);
+  launch_both_compressions<15, 8, f_type2>(vect2);
+  launch_both_compressions<9, 4, f_type2>(vect2);
+  launch_both_compressions<9, 5, f_type2>(vect2);
+  // launch_both_compressions<4, 8, f_type2>(vect2);
 }
 
 template<typename FpType>
 std::enable_if_t<std::is_floating_point<FpType>::value, void>
 convert_back_and_forth(const std::vector<FpType>& input_values)
 {
-  // FIXME adopt the exponent type to something smaller after they are independent
-  using exponent_type =
-    std::conditional_t<std::is_same<FpType, double>::value,
-                       std::int64_t,
-                       std::conditional_t<std::is_same<FpType, float>::value, std::int32_t, std::int16_t>>;
   constexpr int max_exp_block_size = 1; // Use just one to make sure conversions back and forth work
   constexpr int bits_per_value = sizeof(FpType) * CHAR_BIT;
 
-  launch_both_compressions<bits_per_value, max_exp_block_size, FpType, exponent_type>(input_values);
+  launch_both_compressions<bits_per_value, max_exp_block_size, FpType>(input_values);
 }
 
 TEST(frsz2_gpu, back_and_forth32)

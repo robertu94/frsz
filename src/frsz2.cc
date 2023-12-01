@@ -78,25 +78,23 @@ public:
 
 #define dispatch_case(func, bits)                                                                            \
   case bits:                                                                                                 \
-    return func<bits, T, ExpType>(data, total_elements, compressed)
+    return func<bits, T>(data, total_elements, compressed)
 
   int dispatch_float_compress(float* data, uint64_t total_elements, uint8_t* compressed)
   {
     using T = float;
-    using ExpType = int16_t;
     using exp_list = frsz::int_list_t<2, 4, 8, 16, 32, 64, 128, 256, 512, 1024>;
     // clang-format off
     using bit_list = frsz::int_list_t<4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,
                                       21,22,23,24,25,26,27,28,29,30,31,32>;
     // clang-format on
-    frsz::dispatch_frsz2_compression<T, ExpType>(
+    frsz::dispatch_frsz2_compression<T>(
       bit_list{}, bits, exp_list{}, max_exp_block_size, data, total_elements, compressed);
     return 0;
   }
   int dispatch_double_compress(double* data, uint64_t total_elements, uint8_t* compressed)
   {
     using T = double;
-    using ExpType = int16_t;
     using exp_list = frsz::int_list_t<2, 4, 8, 16, 32, 64, 128, 256, 512, 1024>;
     // clang-format off
     using bit_list = frsz::int_list_t<4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,
@@ -104,27 +102,25 @@ public:
                                       36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,
                                       51,52,53,54,55,56,57,58,59,60,61,62,63,64>;
     // clang-format on
-    frsz::dispatch_frsz2_compression<T, ExpType>(
+    frsz::dispatch_frsz2_compression<T>(
       bit_list{}, bits, exp_list{}, max_exp_block_size, data, total_elements, compressed);
     return 0;
   }
   int dispatch_float_decompress(float* data, uint64_t total_elements, uint8_t* compressed)
   {
     using T = float;
-    using ExpType = int16_t;
     using exp_list = frsz::int_list_t<2, 4, 8, 16, 32, 64, 128, 256, 512, 1024>;
     // clang-format off
     using bit_list = frsz::int_list_t<4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,
                                       21,22,23,24,25,26,27,28,29,30,31,32>;
     // clang-format on
-    frsz::dispatch_frsz2_decompression<T, ExpType>(
+    frsz::dispatch_frsz2_decompression<T>(
       bit_list{}, bits, exp_list{}, max_exp_block_size, data, total_elements, compressed);
     return 0;
   }
   int dispatch_double_decompress(double* data, uint64_t total_elements, uint8_t* compressed)
   {
     using T = double;
-    using ExpType = int16_t;
     using exp_list = frsz::int_list_t<2, 4, 8, 16, 32, 64, 128, 256, 512, 1024>;
     // clang-format off
     using bit_list = frsz::int_list_t<4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,
@@ -132,22 +128,25 @@ public:
                                       36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,
                                       51,52,53,54,55,56,57,58,59,60,61,62,63,64>;
     // clang-format on
-    frsz::dispatch_frsz2_decompression<T, ExpType>(
+    frsz::dispatch_frsz2_decompression<T>(
       bit_list{}, bits, exp_list{}, max_exp_block_size, data, total_elements, compressed);
     return 0;
   }
 
   size_t output_size(size_t total_elements) const
   {
-    using ExpType = int16_t;
-    const std::size_t compressed_block_size_byte =
-      ceildiv(max_exp_block_size * bits, CHAR_BIT) + sizeof(ExpType);
+    // TODO replace with call to the frsz2_compressor
     const std::size_t uint_compressed_size_bit = frsz::detail::get_next_power_of_two_value(bits);
+    const std::size_t uint_compressed_size_byte = uint_compressed_size_bit / CHAR_BIT;
+    const std::size_t exponent_size_byte = uint_compressed_size_byte;
+    const std::size_t compressed_block_size_byte =
+      ceildiv(max_exp_block_size * bits, uint_compressed_size_bit) * uint_compressed_size_byte +
+      exponent_size_byte;
 
     const std::size_t remainder = total_elements % max_exp_block_size;
     return (total_elements / max_exp_block_size) * compressed_block_size_byte +
-           (remainder > 0) * (sizeof(ExpType) + ceildiv(remainder * bits, uint_compressed_size_bit) *
-                                                  (uint_compressed_size_bit / CHAR_BIT));
+           (remainder > 0) * (exponent_size_byte + ceildiv(remainder * bits, uint_compressed_size_bit) *
+                                                     uint_compressed_size_byte);
   }
 
   int compress_impl(const pressio_data* input, struct pressio_data* output) override

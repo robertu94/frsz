@@ -438,7 +438,6 @@ abs(const double val)
    * compressed      -- pointer to the start of the compressed data
    * InputType       -- the unsigned integer type that fits the input type
    * OutputType      -- the unsigned integer type that has at least `bits` bits
-   * ExpType         -- the type used to store the exponent
    *
    * max_exp_block_size -- the maximum exponent block size in elements
    * num_exp_blocks     -- the number of blocks that share a common exponent
@@ -459,14 +458,13 @@ abs(const double val)
    * output_byte_offset  -- what byte a work_block_element's byte should start on
    */
 // clang-format on
-// TODO FIXME remove ExpType_ from signature since it is no longer used
-template<int bits_per_value_, int max_exp_block_size_, class FpType_, class ExpType_>
+template<int bits_per_value_, int max_exp_block_size_, class FpType_>
 struct frsz2_compressor
 {
   constexpr static auto bits_per_value = bits_per_value_;
   constexpr static auto max_exp_block_size = max_exp_block_size_;
   using fp_type = FpType_;
-  using exp_type = std::make_signed_t<detail::storage_t<bits_per_value>>; // ExpType_;
+  using exp_type = std::make_signed_t<detail::storage_t<bits_per_value>>;
   static_assert(bits_per_value <= sizeof(fp_type) * CHAR_BIT,
                 "The number of bits per compressed value must be smaller (or equal to) the size of the "
                 "original value type!");
@@ -1074,40 +1072,29 @@ struct int_list_t
 {};
 
 #define CREATE_FRSZ2_DISPATCH(_DISP_NAME, _FUNCTION)                                                         \
-  template<int bits_per_value, class FpType, class ExpType, class... Args>                                   \
+  template<int bits_per_value, class FpType, class... Args>                                                  \
   void _DISP_NAME##_impl(int_list_t<>, const int actual_exp_val, Args&&...)                                  \
   {                                                                                                          \
     throw std::runtime_error("Unsupported exponent block size: " + std::to_string(actual_exp_val));          \
   }                                                                                                          \
-  template<int bits_per_value,                                                                               \
-           class FpType,                                                                                     \
-           class ExpType,                                                                                    \
-           int curr_exp_size,                                                                                \
-           int... exp_block_sizes,                                                                           \
-           class... Args>                                                                                    \
+  template<int bits_per_value, class FpType, int curr_exp_size, int... exp_block_sizes, class... Args>       \
   void _DISP_NAME##_impl(                                                                                    \
     int_list_t<curr_exp_size, exp_block_sizes...>, const int actual_exp_val, Args&&... args)                 \
   {                                                                                                          \
     if (curr_exp_size == actual_exp_val) {                                                                   \
-      frsz2_compressor<bits_per_value, curr_exp_size, FpType, ExpType>::_FUNCTION(                           \
-        std::forward<Args>(args)...);                                                                        \
+      frsz2_compressor<bits_per_value, curr_exp_size, FpType>::_FUNCTION(std::forward<Args>(args)...);       \
     } else {                                                                                                 \
-      _DISP_NAME##_impl<bits_per_value, FpType, ExpType>(                                                    \
+      _DISP_NAME##_impl<bits_per_value, FpType>(                                                             \
         int_list_t<exp_block_sizes...>{}, actual_exp_val, std::forward<Args>(args)...);                      \
     }                                                                                                        \
   }                                                                                                          \
-  template<class FpType, class ExpType, int... exp_block_sizes, class... Args>                               \
+  template<class FpType, int... exp_block_sizes, class... Args>                                              \
   void _DISP_NAME(                                                                                           \
     int_list_t<>, const int actual_bits_val, int_list_t<exp_block_sizes...>, const int, Args&&...)           \
   {                                                                                                          \
     throw std::runtime_error("Unsupported number of bits: " + std::to_string(actual_bits_val));              \
   }                                                                                                          \
-  template<class FpType,                                                                                     \
-           class ExpType,                                                                                    \
-           int curr_bit_value,                                                                               \
-           int... bit_values,                                                                                \
-           int... exp_block_sizes,                                                                           \
-           class... Args>                                                                                    \
+  template<class FpType, int curr_bit_value, int... bit_values, int... exp_block_sizes, class... Args>       \
   void _DISP_NAME(int_list_t<curr_bit_value, bit_values...>,                                                 \
                   int actual_bits_val,                                                                       \
                   int_list_t<exp_block_sizes...> exp_list,                                                   \
@@ -1115,14 +1102,13 @@ struct int_list_t
                   Args&&... args)                                                                            \
   {                                                                                                          \
     if (curr_bit_value == actual_bits_val) {                                                                 \
-      _DISP_NAME##_impl<curr_bit_value, FpType, ExpType>(                                                    \
-        exp_list, actual_exp_val, std::forward<Args>(args)...);                                              \
+      _DISP_NAME##_impl<curr_bit_value, FpType>(exp_list, actual_exp_val, std::forward<Args>(args)...);      \
     } else {                                                                                                 \
-      _DISP_NAME<FpType, ExpType>(int_list_t<bit_values...>{},                                               \
-                                  actual_bits_val,                                                           \
-                                  exp_list,                                                                  \
-                                  actual_exp_val,                                                            \
-                                  std::forward<Args>(args)...);                                              \
+      _DISP_NAME<FpType>(int_list_t<bit_values...>{},                                                        \
+                         actual_bits_val,                                                                    \
+                         exp_list,                                                                           \
+                         actual_exp_val,                                                                     \
+                         std::forward<Args>(args)...);                                                       \
     }                                                                                                        \
   }
 
