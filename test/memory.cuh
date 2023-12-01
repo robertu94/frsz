@@ -184,7 +184,20 @@ public:
     return h_device_memory;
   }
 
-  const std::vector<MemType> get_host_vector() const { return h_vec_; }
+  const host_storage_vector& get_host_vector() const { return h_vec_; }
+
+  void set_all_host_to(MemType value)
+  {
+    for (auto&& el : h_vec_) {
+      el = value;
+    }
+  }
+
+  void set_all_to(MemType value)
+  {
+    this->set_all_host_to(value);
+    this->to_device();
+  }
 
   void set_memory_to(const std::vector<MemType>& other)
   {
@@ -204,7 +217,8 @@ public:
     for (std::size_t i = 0; i < this->get_num_elems(); ++i) {
       if (h_device_memory[i] != h_vec_[i]) {
         matching = false;
-        std::cerr << i << ": host " << h_vec_[i] << " vs " << h_device_memory[i] << " device\n";
+        // Note: Utilize the unary operator+ to promote it to an integer type in order to print it as such
+        std::cerr << i << ": host " << +h_vec_[i] << " vs " << +h_device_memory[i] << " device\n";
       }
     }
     return matching;

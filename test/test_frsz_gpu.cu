@@ -1,6 +1,7 @@
 #include "gtest/gtest.h"
 
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
@@ -9,7 +10,9 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <random>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 #include "frsz2.hpp"
@@ -56,7 +59,8 @@ compare_vectors(const std::vector<T>& v1, const std::vector<T>& v2)
   for (std::size_t i = 0; i < v1.size(); ++i) {
     if (v1[i] != v2[i]) {
       are_equal = false;
-      std::cerr << i << ": " << v1[i] << " vs. " << v2[i] << '\n';
+      // Use unary operator+ to convert the value into an integer or float to print properly
+      std::cerr << i << ": " << +v1[i] << " vs. " << +v2[i] << '\n';
     }
   }
   return are_equal;
@@ -71,13 +75,13 @@ perform_bit_cast_tests(const std::vector<IType>& expected_i, const std::vector<F
   ASSERT_EQ(expected_i.size(), num_elems);
   Memory<IType> i_mem(expected_i);
   Memory<FType> f_mem(expected_f.size(), {});
-  bool i_to_f_devices = compare_kernel<1, num_elems>(bit_cast_from_to<IType, FType>{}, i_mem, f_mem);
+  const bool i_to_f_devices = compare_kernel<1, num_elems>(bit_cast_from_to<IType, FType>{}, i_mem, f_mem);
   EXPECT_TRUE(i_to_f_devices);
-  auto cmp_f = compare_vectors(f_mem.get_host_vector(), expected_f);
+  const auto cmp_f = compare_vectors(f_mem.get_host_vector(), expected_f);
   EXPECT_TRUE(cmp_f);
-  auto f_to_i_devices = compare_kernel<1, num_elems>(bit_cast_from_to<FType, IType>{}, f_mem, i_mem);
+  const auto f_to_i_devices = compare_kernel<1, num_elems>(bit_cast_from_to<FType, IType>{}, f_mem, i_mem);
   EXPECT_TRUE(f_to_i_devices);
-  auto cmp_i = compare_vectors(i_mem.get_host_vector(), expected_i);
+  const auto cmp_i = compare_vectors(i_mem.get_host_vector(), expected_i);
   EXPECT_TRUE(cmp_i);
 }
 
@@ -197,7 +201,8 @@ perform_dismantle_floating_value(
   bool cmp_devices = compare_kernel<1, num_elems>(
     dismantle_floating_value<FType>{}, input_mem, sign_mem, exponent_mem, significand_mem);
   EXPECT_TRUE(cmp_devices);
-  auto cmp_sign = compare_vectors(sign_mem.get_host_vector(), expected_sign);
+  // Note: bool vector needs to be copied explicitly because underlying type is not a `std::vector`
+  auto cmp_sign = compare_vectors(sign_mem.get_host_copy(), expected_sign);
   EXPECT_TRUE(cmp_sign);
   auto cmp_exponent = compare_vectors(exponent_mem.get_host_vector(), expected_exponent);
   EXPECT_TRUE(cmp_exponent);
@@ -299,7 +304,7 @@ void
 print_bytes(const std::uint8_t* bytes, std::size_t size)
 {
   for (std::size_t i = 0; i < size; ++i) {
-    if (i % 8 == 0) {
+    if (i > 0 && i % 8 == 0) {
       std::cout << '\n' << std::setw(2) << i << ": ";
     }
     std::cout << std::setw(2) << std::setfill('0') << std::hex << static_cast<int>(bytes[i]) << std::dec
@@ -313,13 +318,13 @@ void
 launch_both_compressions(const std::vector<FpType>& flt_vec)
 {
   using frsz2_comp = frsz::frsz2_compressor<bits_per_value, max_exp_block_size, FpType, ExpType>;
-  std::cout << "Test with " << int(bits_per_value) << "bits; Exponent block size: " << max_exp_block_size
-            << '\n';
+  // std::cout << "Test with " << int(bits_per_value) << "bits; Exponent block size: " << max_exp_block_size
+  //           << '\n';
   Memory<FpType> flt_mem(flt_vec);
   const std::size_t total_elements = flt_mem.get_num_elems();
   constexpr int blocks_per_tb = std::max(1, 512 / max_exp_block_size);
   // constexpr int blocks_per_tb = 1;
-  const int comp_num_threads = max_exp_block_size;
+  constexpr int comp_num_threads = 4 * max_exp_block_size;
   const int comp_num_blocks = frsz::ceildiv<int>(total_elements, comp_num_threads);
   const int decomp_num_threads = blocks_per_tb * max_exp_block_size;
   const int decomp_num_blocks = frsz::ceildiv<int>(total_elements, decomp_num_threads);
@@ -328,21 +333,22 @@ launch_both_compressions(const std::vector<FpType>& flt_vec)
   Memory<std::uint8_t> compressed_mem(compressed_memory_size, 0xFF);
   frsz2_comp::compress_cpu_impl(flt_mem.get_host_const(), total_elements, compressed_mem.get_host());
 
-  frsz::compress_gpu<frsz2_comp><<<comp_num_blocks, comp_num_threads>>>(
+  frsz::compress_gpu<frsz2_comp, comp_num_threads><<<comp_num_blocks, comp_num_threads>>>(
     flt_mem.get_device_const(), total_elements, compressed_mem.get_device());
   // std::cout << "Device compressed memory:\n";
   // print_bytes(compressed_mem.get_device_copy().data(), compressed_memory_size);
   // std::cout << "Host compressed memory:\n";
   // print_bytes(compressed_mem.get_host(), compressed_memory_size);
 
-  // EXPECT_TRUE(compressed_mem.is_device_matching_host());
+  EXPECT_TRUE(compressed_mem.is_device_matching_host());
   const auto device_compressed = compressed_mem.get_device_copy();
   bool is_compressed_same = true;
   for (std::size_t i = 0; i < compressed_memory_size; ++i) {
-    const auto hval = int(compressed_mem.get_host_vector()[i]);
-    const auto dval = int(device_compressed[i]);
+    const auto hval = compressed_mem.get_host_vector()[i];
+    const auto dval = device_compressed[i];
     if (hval != dval) {
-      // std::cerr << i << ": host " << hval << " vs " << dval << " device\n";
+      // Use unary operator+ to promote it to integer type
+      std::cerr << i << ": host " << +hval << " vs " << +dval << " device\n";
       is_compressed_same = false;
     }
   }
@@ -350,12 +356,11 @@ launch_both_compressions(const std::vector<FpType>& flt_vec)
   // EXPECT_TRUE(compressed_mem.is_device_matching_host());
   // compressed_mem.to_device();
   // compressed_mem.to_host();
-  if ((bits_per_value == 15 || bits_per_value == 16) && max_exp_block_size == 8) {
-    print_bytes(compressed_mem.get_host(), compressed_memory_size);
-  }
+  // if ((bits_per_value == 15 || bits_per_value == 16) && max_exp_block_size == 8) {
+  //   print_bytes(compressed_mem.get_host(), compressed_memory_size);
+  // }
 
-  std::vector<FpType> overwrite_memory_flt(total_elements, std::numeric_limits<FpType>::infinity());
-  flt_mem.set_memory_to(overwrite_memory_flt);
+  flt_mem.set_all_to(std::numeric_limits<FpType>::infinity());
 
   frsz::decompress_gpu<frsz2_comp><<<decomp_num_blocks, decomp_num_threads>>>(
     flt_mem.get_device(), total_elements, compressed_mem.get_device_const());
@@ -370,14 +375,13 @@ launch_both_compressions(const std::vector<FpType>& flt_vec)
   // }
 }
 
-// TODO
 TEST(frsz2_gpu, decompress)
 {
   using f_type = double;
   std::array<double, 9> repeat_vals{ 1., 2., 3., 4., 0.25, -0.25, -0.125, 1 / 32., 0.125 };
-  // const std::size_t total_size{ 2049 };
+  const std::size_t total_size{ 2049 };
   // const std::size_t total_size{ 49 };
-  const std::size_t total_size{ 9 };
+  // const std::size_t total_size{ 9 };
   std::vector<f_type> vect(total_size);
   for (std::size_t i = 0; i < total_size; ++i) {
     vect[i] = repeat_vals[i % repeat_vals.size()];
@@ -385,8 +389,6 @@ TEST(frsz2_gpu, decompress)
   launch_both_compressions<32, 32, f_type, std::int16_t>(vect);
   launch_both_compressions<16, 32, f_type, std::int16_t>(vect);
   launch_both_compressions<16, 8, f_type, std::int16_t>(vect);
-  // FIXME
-  // Fails (actually crashes with "misaligned address") for non power-of-two bits_per_value
   launch_both_compressions<15, 8, f_type, std::int16_t>(vect);
   launch_both_compressions<9, 8, f_type, std::int16_t>(vect);
   launch_both_compressions<9, 4, f_type, std::int16_t>(vect);
@@ -402,5 +404,40 @@ TEST(frsz2_gpu, decompress)
   launch_both_compressions<9, 4, f_type2, std::int8_t>(vect2);
   launch_both_compressions<9, 5, f_type2, std::int8_t>(vect2);
   // launch_both_compressions<4, 8, f_type2, std::int8_t>(vect2);
-  // */
+}
+
+template<typename FpType>
+std::enable_if_t<std::is_floating_point<FpType>::value, void>
+convert_back_and_forth(const std::vector<FpType>& input_values)
+{
+  // FIXME adopt the exponent type to something smaller after they are independent
+  using exponent_type =
+    std::conditional_t<std::is_same<FpType, double>::value,
+                       std::int64_t,
+                       std::conditional_t<std::is_same<FpType, float>::value, std::int32_t, std::int16_t>>;
+  constexpr int max_exp_block_size = 1; // Use just one to make sure conversions back and forth work
+  constexpr int bits_per_value = sizeof(FpType) * CHAR_BIT;
+
+  launch_both_compressions<bits_per_value, max_exp_block_size, FpType, exponent_type>(input_values);
+}
+
+TEST(frsz2_gpu, back_and_forth32)
+{
+
+  // TODO brute-force all floating point numbers (incl. denormals)
+  using fp_type = float;
+  constexpr int num_vectors = 100000;
+  std::random_device rd;
+  std::default_random_engine rnd_engine(rd());
+  std::uniform_real_distribution<fp_type> uni_dist(-1e8, 1e8);
+  std::vector<fp_type> rnd_vector(num_vectors);
+  for (auto&& el : rnd_vector) {
+    auto rnd_val = uni_dist(rnd_engine);
+    while (!std::isfinite(rnd_val)) {
+      std::cout << "Re-randomizing non-finite number " << rnd_val << '\n';
+      rnd_val = uni_dist(rnd_engine);
+    }
+    el = rnd_val;
+  }
+  convert_back_and_forth(rnd_vector);
 }
