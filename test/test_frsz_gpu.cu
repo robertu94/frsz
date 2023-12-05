@@ -331,10 +331,12 @@ launch_both_compressions(const std::vector<FpType>& flt_vec)
   const std::size_t compressed_memory_size = frsz2_comp::compute_compressed_memory_size_byte(total_elements);
 
   Memory<std::uint8_t> compressed_mem(compressed_memory_size, 0xFF);
-  frsz2_comp::compress_cpu_impl(flt_mem.get_host_const(), total_elements, compressed_mem.get_host());
+  frsz2_comp h_compressor(compressed_mem.get_host(), total_elements);
+  frsz2_comp d_compressor(compressed_mem.get_device(), total_elements);
+  h_compressor.compress_cpu_impl(flt_mem.get_host_const());
 
-  frsz::compress_gpu<frsz2_comp, comp_num_threads><<<comp_num_blocks, comp_num_threads>>>(
-    flt_mem.get_device_const(), total_elements, compressed_mem.get_device());
+  frsz::compress_gpu<frsz2_comp, comp_num_threads>
+    <<<comp_num_blocks, comp_num_threads>>>(flt_mem.get_device_const(), d_compressor);
   // std::cout << "Device compressed memory:\n";
   // print_bytes(compressed_mem.get_device_copy().data(), compressed_memory_size);
   // std::cout << "Host compressed memory:\n";
@@ -362,10 +364,10 @@ launch_both_compressions(const std::vector<FpType>& flt_vec)
 
   flt_mem.set_all_to(std::numeric_limits<FpType>::infinity());
 
-  frsz::decompress_gpu<frsz2_comp><<<decomp_num_blocks, decomp_num_threads>>>(
-    flt_mem.get_device(), total_elements, compressed_mem.get_device_const());
+  frsz::decompress_gpu<frsz2_comp>
+    <<<decomp_num_blocks, decomp_num_threads>>>(flt_mem.get_device(), d_compressor);
   cudaDeviceSynchronize();
-  frsz2_comp::decompress_cpu_impl(flt_mem.get_host(), total_elements, compressed_mem.get_host_const());
+  h_compressor.decompress_cpu_impl(flt_mem.get_host());
   // flt_mem.print_device_host();
   EXPECT_TRUE(flt_mem.is_device_matching_host());
   const auto no_loss = compare_vectors(flt_mem.get_device_copy(), flt_vec);

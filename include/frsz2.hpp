@@ -592,6 +592,17 @@ struct frsz2_compressor
                    : uint_compressed_type{};
   }
 
+  FRSZ_ATTRIBUTES frsz2_compressor(std::uint8_t* data, std::size_t total_elements)
+    : compressed_{ data }
+    , total_elements_{ total_elements }
+  {
+  }
+
+  FRSZ_ATTRIBUTES std::uint8_t* get_compressed_data() { return compressed_; }
+  FRSZ_ATTRIBUTES const std::uint8_t* get_compressed_data() const { return compressed_; }
+  FRSZ_ATTRIBUTES const std::uint8_t* get_const_compressed_data() const { return compressed_; }
+  FRSZ_ATTRIBUTES std::size_t get_total_elements() const { return total_elements_; }
+
 // TODO remove majority of shared memory when bits_per_value is power of 2
 // TODO maybe let every thread read only the data it needs to without putting it into shared memory
 // TODO simplify decompression code significantly (maybe also the compression code)
@@ -602,16 +613,17 @@ struct frsz2_compressor
    * Threadblock : Exp_block_size is 1:1
    * exponent_block_idx must be identical for all threads in a thread block!
    */
-  __device__ static void general_compress_gpu_function(const std::size_t exponent_block_idx,
-                                                       const fp_type fp_input_value,
-                                                       const std::uint64_t total_elements,
-                                                       std::uint8_t* const __restrict__ compressed)
+  __device__ void general_compress_gpu_function(const std::size_t exponent_block_idx,
+                                                const fp_type fp_input_value)
   {
     constexpr auto min_exp_value =
       std::numeric_limits<typename detail::fp::float_traits<fp_type>::exponent_t>::min();
 
-    const std::size_t num_exp_blocks = ceildiv<std::size_t>(total_elements, max_exp_block_size);
-    const std::size_t total_compression_size = compute_compressed_memory_size_byte(total_elements);
+    // Necessary to separate it to have the __restrict__ working
+    std::uint8_t* const __restrict__ compressed = compressed_;
+
+    const std::size_t num_exp_blocks = ceildiv<std::size_t>(total_elements_, max_exp_block_size);
+    const std::size_t total_compression_size = compute_compressed_memory_size_byte(total_elements_);
 
     // TODO For multiple blocks per thread block, more shared memory is needed
     constexpr int required_shared_memory{ std::max<int>(
@@ -718,10 +730,7 @@ struct frsz2_compressor
   // (meaning all threads where global_thread_id / max_exp_block_size is the same value, they need to access
   // the same compression block: global_value_idx / max_exp_block_size)
   template<int block_size>
-  __device__ static void compress_gpu_function(const std::size_t global_value_idx,
-                                               const fp_type fp_input_value,
-                                               const std::uint64_t total_elements,
-                                               std::uint8_t* const __restrict__ compressed)
+  __device__ void compress_gpu_function(const std::size_t global_value_idx, const fp_type fp_input_value)
   {
     static_assert(std::alignment_of<uint_compressed_type>::value == std::alignment_of<exp_type>::value,
                   "Alignment must match!");
@@ -729,6 +738,9 @@ struct frsz2_compressor
     // Internal assert: blockDim = integer * max_exp_block_size
     assert((blockDim.x * blockDim.y * blockDim.z) % max_exp_block_size == 0);
     assert((blockDim.x * blockDim.y * blockDim.z) == block_size);
+
+    // Necessary to separate it to have the __restrict__ working
+    std::uint8_t* const __restrict__ compressed = compressed_;
 
     constexpr exp_type min_exp_value{
       std::numeric_limits<typename detail::fp::float_traits<fp_type>::exponent_t>::min()
@@ -827,19 +839,20 @@ struct frsz2_compressor
     for (int i = local_idx;
          i < ceildiv<int>(max_exp_block_size * bits_per_value, sizeof(uint_compressed_type) * CHAR_BIT) &&
          comp_block_idx * compressed_block_size_byte + i * sizeof(uint_compressed_type) <
-           compute_compressed_memory_size_byte(total_elements);
+           compute_compressed_memory_size_byte(total_elements_);
          i += block_size) {
       compressed_output[i] = shared_compressed[i];
     }
   }
 
-  static __device__ fp_type decompress_gpu_function(const std::size_t idx,
-                                                    const std::uint64_t total_elements,
-                                                    std::uint8_t const* __restrict__ compressed)
+  __device__ fp_type decompress_gpu_element(const std::size_t idx) const
   {
     static_assert(std::alignment_of<uint_compressed_type>::value == std::alignment_of<exp_type>::value,
                   "Alignment must match!");
     static_assert(sizeof(uint_compressed_type) == sizeof(exp_type), "Sizes must match!");
+
+    // Necessary to separate it to have the __restrict__ working
+    const std::uint8_t* const __restrict__ compressed = compressed_;
 
     //*
     // +1 for the exponent value
@@ -908,16 +921,14 @@ struct frsz2_compressor
 
 #endif // __CUDA_ARCH__
 
-  static int compress_cpu_impl(fp_type const* data,
-                               const std::size_t total_elements,
-                               std::uint8_t* compressed)
+  int compress_cpu_impl(fp_type const* data)
   {
-    const std::size_t num_exp_blocks = ceildiv<std::size_t>(total_elements, max_exp_block_size);
+    const std::size_t num_exp_blocks = ceildiv<std::size_t>(total_elements_, max_exp_block_size);
     for (std::size_t exp_block_id = 0; exp_block_id < num_exp_blocks; exp_block_id++) {
 
       // how many elements to process in this block?
       const std::size_t exp_block_elements =
-        std::min<std::size_t>(max_exp_block_size, total_elements - exp_block_id * max_exp_block_size);
+        std::min<std::size_t>(max_exp_block_size, total_elements_ - exp_block_id * max_exp_block_size);
 
       // find the max exponent in the block to determine the bias
       const std::size_t exp_block_data_offset = max_exp_block_size * exp_block_id;
@@ -928,13 +939,13 @@ struct frsz2_compressor
       const exp_type max_exp = detail::fp::exponent(in_max);
 
       // compute the exp_block offset
-      uint8_t* exp_block_compressed = compressed + compressed_block_size_byte * exp_block_id;
+      uint8_t* exp_block_compressed = compressed_ + compressed_block_size_byte * exp_block_id;
       std::memcpy(exp_block_compressed, &max_exp, sizeof(exp_type));
 
       // at this point we have scaled values that we can encode
 
       const auto max_local_iterations =
-        std::min<std::size_t>(max_exp_block_size, total_elements - exp_block_id * max_exp_block_size);
+        std::min<std::size_t>(max_exp_block_size, total_elements_ - exp_block_id * max_exp_block_size);
       uint_compressed_type overlap{};
       for (std::size_t local_idx = 0; local_idx < max_local_iterations; ++local_idx) {
         const std::size_t output_bit_offset = (local_idx * bits_per_value) % uint_compressed_size_bit;
@@ -989,42 +1000,68 @@ struct frsz2_compressor
     return 0;
   }
 
-  static int decompress_cpu_impl(fp_type* output,
-                                 const std::uint64_t total_elements,
-                                 std::uint8_t const* compressed)
+  // TODO change the memcpy to a simple access
+  // TODO make sure that compile time already differentiates between reading 1 and 2 elements
+
+  // decompresses only a single element
+  fp_type decompress_cpu_element(const std::size_t idx) const
   {
-    // using InputType = detail::storage_t<bits_per_value>;
-    // using int_output_type = detail::scaled_t<fp_type>;
+    static_assert(compressed_block_size_byte % alignof(exp_type) == 0, "Alignment must be correct");
+    const std::size_t exp_block_id = idx / max_exp_block_size;
+    const auto local_idx = idx % max_exp_block_size;
 
-    const std::size_t num_exp_blocks = ceildiv<std::size_t>(total_elements, max_exp_block_size);
+    // recover the exponent
+    const exp_type block_exp =
+      *reinterpret_cast<const exp_type*>(compressed_ + exp_block_id * compressed_block_size_byte);
+    const int output_bit_offset = (local_idx * bits_per_value) % uint_compressed_size_bit;
+    const int compressed_start_offset = ((local_idx * bits_per_value) / uint_compressed_size_bit);
+    const auto local_val = retrieve_shift_value(
+      output_bit_offset,
+      reinterpret_cast<const uint_compressed_type*>(compressed_ + exp_block_id * compressed_block_size_byte) +
+        compressed_start_offset);
+    return detail::fp::fixed_to_floating<fp_type>(local_val, block_exp);
+  }
+
+  // decompresses exactly one block with the given ID and writes them into output
+  void decompress_cpu_block(std::size_t exp_block_id, fp_type* output) const
+  {
+    const std::uint8_t* exp_block_compressed = compressed_ + compressed_block_size_byte * exp_block_id;
+
+    // recover the exponent
+    exp_type block_exp = {};
+    std::memcpy(&block_exp, exp_block_compressed, sizeof(exp_type));
+
+    // recover the scaled values
+    const std::size_t max_local_iterations =
+      std::min<std::size_t>(max_exp_block_size, total_elements_ - exp_block_id * max_exp_block_size);
+    uint_compressed_type tmp[2] = { 0, 0 };
+    for (std::size_t local_idx = 0; local_idx < max_local_iterations; ++local_idx) {
+      const int output_bit_offset = (local_idx * bits_per_value) % uint_compressed_size_bit;
+      const int output_byte_offset =
+        sizeof(exp_type) +
+        ((local_idx * bits_per_value) / uint_compressed_size_bit) * sizeof(uint_compressed_type);
+      const int copy_size = (bits_per_value + output_bit_offset > uint_compressed_size_bit)
+                              ? 2 * sizeof(uint_compressed_type)
+                              : sizeof(uint_compressed_type);
+      std::memcpy(tmp, exp_block_compressed + output_byte_offset, copy_size);
+      const auto local_val = retrieve_shift_value(output_bit_offset, tmp[0], tmp[1]);
+      output[local_idx] = detail::fp::fixed_to_floating<fp_type>(local_val, block_exp);
+    }
+  }
+
+  int decompress_cpu_impl(fp_type* output) const
+  {
+    const std::size_t num_exp_blocks = ceildiv<std::size_t>(total_elements_, max_exp_block_size);
     for (std::size_t exp_block_id = 0; exp_block_id < num_exp_blocks; exp_block_id++) {
-
-      const std::uint8_t* exp_block_compressed = compressed + compressed_block_size_byte * exp_block_id;
-
-      // recover the exponent
-      exp_type block_exp = {};
-      std::memcpy(&block_exp, exp_block_compressed, sizeof(exp_type));
-
-      // recover the scaled values
-      const std::size_t max_local_iterations =
-        std::min<std::size_t>(max_exp_block_size, total_elements - exp_block_id * max_exp_block_size);
-      uint_compressed_type tmp[2] = { 0, 0 };
-      for (std::size_t local_idx = 0; local_idx < max_local_iterations; ++local_idx) {
-        const int output_bit_offset = (local_idx * bits_per_value) % uint_compressed_size_bit;
-        const int output_byte_offset =
-          sizeof(exp_type) +
-          ((local_idx * bits_per_value) / uint_compressed_size_bit) * sizeof(uint_compressed_type);
-        const int copy_size = (bits_per_value + output_bit_offset > uint_compressed_size_bit)
-                                ? 2 * sizeof(uint_compressed_type)
-                                : sizeof(uint_compressed_type);
-        std::memcpy(tmp, exp_block_compressed + output_byte_offset, copy_size);
-        const auto local_val = retrieve_shift_value(output_bit_offset, tmp[0], tmp[1]);
-        output[exp_block_id * max_exp_block_size + local_idx] =
-          detail::fp::fixed_to_floating<fp_type>(local_val, block_exp);
-      }
+      this->decompress_cpu_block(exp_block_id, output + exp_block_id * max_exp_block_size);
     }
     return 0;
   }
+
+private:
+  // TODO maybe change type to uint_compressed_type;
+  std::uint8_t* const compressed_;
+  const std::size_t total_elements_;
 
 }; // struct frsz2_compressor
 
@@ -1032,32 +1069,27 @@ struct frsz2_compressor
 template<typename Frsz2Compressor, int block_size>
 __global__
 __launch_bounds__(block_size) void compress_gpu(const typename Frsz2Compressor::fp_type* __restrict__ data,
-                                                const std::size_t total_elements,
-                                                std::uint8_t* const __restrict__ compressed)
+                                                Frsz2Compressor compressor)
 {
   // requires that all threads of a thread block take the loop iteration, so there is no synchronization
   // problem
   for (std::size_t global_idx = blockIdx.x * blockDim.x + threadIdx.x;
-       global_idx < ceildiv<std::size_t>(total_elements, blockDim.x) * blockDim.x;
+       global_idx < ceildiv<std::size_t>(compressor.get_total_elements(), blockDim.x) * blockDim.x;
        global_idx += gridDim.x * blockDim.x) {
 
-    Frsz2Compressor::compress_gpu_function<block_size>(
+    compressor.template compress_gpu_function<block_size>(
       global_idx,
-      global_idx < total_elements ? data[global_idx] : typename Frsz2Compressor::fp_type{},
-      total_elements,
-      compressed);
+      global_idx < compressor.get_total_elements() ? data[global_idx] : typename Frsz2Compressor::fp_type{});
   }
 }
 
 template<typename Frsz2Compressor>
 __global__ void
-decompress_gpu(typename Frsz2Compressor::fp_type* const __restrict__ output,
-               const std::size_t total_elements,
-               const std::uint8_t* const __restrict__ compressed)
+decompress_gpu(typename Frsz2Compressor::fp_type* const __restrict__ output, Frsz2Compressor compressor)
 {
-  for (std::size_t idx = blockIdx.x * blockDim.x + threadIdx.x; idx < total_elements;
+  for (std::size_t idx = blockIdx.x * blockDim.x + threadIdx.x; idx < compressor.get_total_elements();
        idx += gridDim.x * blockDim.x) {
-    const auto out = Frsz2Compressor::decompress_gpu_function(idx, total_elements, compressed);
+    const auto out = compressor.decompress_gpu_element(idx);
     output[idx] = out;
     //   printf("%d-%d: %lld is fine\n", blockIdx.x, threadIdx.x, global_idx);
     // } else {
@@ -1077,15 +1109,24 @@ struct int_list_t
   {                                                                                                          \
     throw std::runtime_error("Unsupported exponent block size: " + std::to_string(actual_exp_val));          \
   }                                                                                                          \
-  template<int bits_per_value, class FpType, int curr_exp_size, int... exp_block_sizes, class... Args>       \
-  void _DISP_NAME##_impl(                                                                                    \
-    int_list_t<curr_exp_size, exp_block_sizes...>, const int actual_exp_val, Args&&... args)                 \
+  template<int bits_per_value,                                                                               \
+           class FpType,                                                                                     \
+           int curr_exp_size,                                                                                \
+           int... exp_block_sizes,                                                                           \
+           class FpType2,                                                                                    \
+           class MemType>                                                                                    \
+  void _DISP_NAME##_impl(int_list_t<curr_exp_size, exp_block_sizes...>,                                      \
+                         const int actual_exp_val,                                                           \
+                         FpType2 flt_mem,                                                                    \
+                         std::size_t total_elems,                                                            \
+                         MemType comp_mem)                                                                   \
   {                                                                                                          \
     if (curr_exp_size == actual_exp_val) {                                                                   \
-      frsz2_compressor<bits_per_value, curr_exp_size, FpType>::_FUNCTION(std::forward<Args>(args)...);       \
+      frsz2_compressor<bits_per_value, curr_exp_size, FpType> tmp(comp_mem, total_elems);                    \
+      tmp._FUNCTION(flt_mem);                                                                                \
     } else {                                                                                                 \
       _DISP_NAME##_impl<bits_per_value, FpType>(                                                             \
-        int_list_t<exp_block_sizes...>{}, actual_exp_val, std::forward<Args>(args)...);                      \
+        int_list_t<exp_block_sizes...>{}, actual_exp_val, flt_mem, total_elems, comp_mem);                   \
     }                                                                                                        \
   }                                                                                                          \
   template<class FpType, int... exp_block_sizes, class... Args>                                              \
