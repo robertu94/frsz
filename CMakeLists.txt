@@ -60,6 +60,7 @@ add_library(frsz
   ./src/frsz.cc
   ./src/frsz2.cc
   ./include/frsz.h
+  ./include/frsz2.hpp
   )
 target_link_libraries(frsz PRIVATE LibPressio::libpressio OpenMP::OpenMP_CXX)
 target_compile_features(frsz PUBLIC cxx_std_20)
