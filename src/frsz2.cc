@@ -39,6 +39,14 @@ public:
     struct pressio_options options;
     set(options, "pressio:thread_safe", pressio_thread_safety_multiple);
     set(options, "pressio:stability", "experimental");
+    
+        std::vector<std::string> invalidations {"frsz2:bits", "frsz2:max_exp_block_size"}; 
+        std::vector<pressio_configurable const*> invalidation_children {}; 
+        
+        set(options, "predictors:error_dependent", get_accumulate_configuration("predictors:error_dependent", invalidation_children, invalidations));
+        set(options, "predictors:error_agnostic", get_accumulate_configuration("predictors:error_agnostic", invalidation_children, invalidations));
+        set(options, "predictors:runtime", get_accumulate_configuration("predictors:runtime", invalidation_children, invalidations));
+
     return options;
   }
 

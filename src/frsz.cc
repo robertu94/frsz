@@ -5,7 +5,6 @@
 #include "libpressio_ext/cpp/options.h"
 #include "libpressio_ext/cpp/pressio.h"
 #include <cmath>
-#include <algorithm>
 #include <limits>
 
 extern "C" void register_frsz() {
@@ -25,8 +24,16 @@ public:
   struct pressio_options get_configuration_impl() const override
   {
     struct pressio_options options;
-    set(options, "pressio:thread_safe", static_cast<int32_t>(pressio_thread_safety_multiple));
+    set(options, "pressio:thread_safe", pressio_thread_safety_multiple);
     set(options, "pressio:stability", "experimental");
+    
+        std::vector<std::string> invalidations {"frsz:epsilon"}; 
+        std::vector<pressio_configurable const*> invalidation_children {}; 
+        
+        set(options, "predictors:error_dependent", get_accumulate_configuration("predictors:error_dependent", invalidation_children, invalidations));
+        set(options, "predictors:error_agnostic", get_accumulate_configuration("predictors:error_agnostic", invalidation_children, invalidations));
+        set(options, "predictors:runtime", get_accumulate_configuration("predictors:runtime", invalidation_children, invalidations));
+
     return options;
   }
 
