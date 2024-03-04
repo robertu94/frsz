@@ -136,6 +136,7 @@ bit_cast(const From& src) noexcept
 }
 
 namespace detail {
+namespace {
 
 #if defined(__CUDA_ARCH__)
 __device__ int
@@ -213,6 +214,7 @@ template<class T>
 
 #endif // defined(__CUDA_ARCH__)
 
+} // namespace
 } // namespace detail
 
 template<class T>
@@ -394,6 +396,8 @@ fixed_to_floating(T fixed, Exp block_exponent)
 } // namespace fp
 } // namespace detail
 
+namespace {
+
 // Note: this only works for (a * b > 0) and b != 0
 template<class T>
 constexpr T
@@ -430,6 +434,8 @@ abs(const double val)
   return std::abs(val);
 #endif
 }
+
+} // namespace
 
 // clang-format off
   /*
