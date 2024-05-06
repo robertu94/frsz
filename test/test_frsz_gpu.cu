@@ -318,8 +318,8 @@ void
 launch_both_compressions(const std::vector<FpType>& flt_vec)
 {
   using frsz2_comp = frsz::frsz2_compressor<bits_per_value, max_exp_block_size, FpType>;
-  // std::cout << "Test with " << int(bits_per_value) << "bits; Exponent block size: " << max_exp_block_size
-  //           << '\n';
+  std::cout << "Test with " << (std::is_same<FpType, double>::value ? "double: " : "float: ")
+            << int(bits_per_value) << "bits; Exponent block size: " << max_exp_block_size << '\n';
   Memory<FpType> flt_mem(flt_vec);
   const std::size_t total_elements = flt_mem.get_num_elems();
   constexpr int blocks_per_tb = std::max(1, 512 / max_exp_block_size);
@@ -328,7 +328,9 @@ launch_both_compressions(const std::vector<FpType>& flt_vec)
   const int comp_num_blocks = frsz::ceildiv<int>(total_elements, comp_num_threads);
   const int decomp_num_threads = blocks_per_tb * max_exp_block_size;
   const int decomp_num_blocks = frsz::ceildiv<int>(total_elements, decomp_num_threads);
-  const std::size_t compressed_memory_size = frsz2_comp::compute_compressed_memory_size_byte(total_elements);
+  // Add to the memory size in order to check for out-of-bound accesses
+  const std::size_t compressed_memory_size =
+    frsz2_comp::compute_compressed_memory_size_byte(total_elements) + 128;
 
   Memory<std::uint8_t> compressed_mem(compressed_memory_size, 0xFF);
   frsz2_comp h_compressor(compressed_mem.get_host(), total_elements);
@@ -382,7 +384,6 @@ TEST(frsz2_gpu, decompress)
   using f_type = double;
   std::array<double, 9> repeat_vals{ 1., 2., 3., 4., 0.25, -0.25, -0.125, 1 / 32., 0.125 };
   const std::size_t total_size{ 2049 };
-  // const std::size_t total_size{ 49 };
   // const std::size_t total_size{ 9 };
   std::vector<f_type> vect(total_size);
   for (std::size_t i = 0; i < total_size; ++i) {
