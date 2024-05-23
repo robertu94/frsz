@@ -612,11 +612,11 @@ protected:
   }
 
 #if defined(FRSZ_CUDA_HIP_COMPILER)
-  template<int bits_per_value2 = bits_per_value>
+  template<typename IndexType, int bits_per_value2 = bits_per_value>
   static constexpr __device__ std::enable_if_t<uint_compressed_size_bit == bits_per_value2, fp_type>
   decompress_gpu_element_impl(const uint_compressed_type* __restrict__ compressed,
                               const exp_type* __restrict__ exponents,
-                              const std::size_t idx)
+                              const IndexType idx)
   {
     static_assert(
       bits_per_value2 == bits_per_value,
@@ -656,11 +656,11 @@ protected:
     return xstd::bit_cast<fp_type>(result);
   }
 
-  template<int bits_per_value2 = bits_per_value>
+  template<typename IndexType, int bits_per_value2 = bits_per_value>
   static constexpr __device__ std::enable_if_t<uint_compressed_size_bit != bits_per_value2, fp_type>
   decompress_gpu_element_impl(const uint_compressed_type* __restrict__ compressed,
                               const exp_type* __restrict__ exponents,
-                              const std::size_t idx)
+                              const IndexType idx)
   {
     static_assert(
       bits_per_value2 == bits_per_value,
@@ -998,7 +998,8 @@ public:
     }
   }
 
-  __device__ fp_type decompress_gpu_element(const std::size_t idx) const
+  template<typename IndexType>
+  __device__ fp_type decompress_gpu_element(const IndexType idx) const
   {
     static_assert(std::alignment_of<uint_compressed_type>::value == std::alignment_of<exp_type>::value,
                   "Alignment must match!");
