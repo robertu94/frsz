@@ -18,6 +18,7 @@
 
 #if defined(__CUDACC__) || defined(__HIPCC__)
 #define FRSZ_CUDA_HIP_COMPILER 1
+#include <cooperative_groups.h>
 #endif
 
 #ifdef FRSZ_CUDA_HIP_COMPILER
@@ -438,6 +439,36 @@ abs(const double val)
   return std::abs(val);
 #endif
 }
+
+#if defined(FRSZ_CUDA_HIP_COMPILER)
+namespace device {
+/**
+ * @internal
+ *
+ * Computes a reduction using the binary operation `reduce_op` on a group
+ * `group`. Each thread contributes with one element `local_data`. The local
+ * thread element is always passed as the first parameter to the `reduce_op`.
+ * The function returns the result of the reduction on all threads.
+ *
+ * @note The function is guaranteed to return the correct value on all threads
+ *       only if `reduce_op` is commutative (in addition to being associative).
+ *       Otherwise, the correct value is returned only to the thread with
+ *       subwarp index 0.
+ */
+template<typename Group, typename ValueType, typename Operator>
+__device__ __forceinline__ ValueType
+reduce(const Group& group, ValueType local_data, Operator reduce_op = Operator{})
+{
+#pragma unroll
+  for (std::int32_t bitmask = 1; bitmask < group.size(); bitmask <<= 1) {
+    const auto remote_data = group.shfl_xor(local_data, bitmask);
+    local_data = reduce_op(local_data, remote_data);
+  }
+  return local_data;
+}
+
+}
+#endif
 
 } // namespace
 
@@ -861,12 +892,71 @@ public:
   // global_value_idx must target the same compression block for all threads in max_exp_block_size blocks
   // (meaning all threads where global_thread_id / max_exp_block_size is the same value, they need to access
   // the same compression block: global_value_idx / max_exp_block_size)
-  template<int block_size>
-  __device__ void compress_gpu_function(const std::size_t global_value_idx, const fp_type fp_input_value)
+  template<int block_size, int bits_per_value2 = bits_per_value>
+  __device__ std::enable_if_t<uint_compressed_size_bit == bits_per_value2> compress_gpu_function(
+    const std::size_t global_value_idx,
+    const fp_type fp_input_value)
   {
     static_assert(std::alignment_of<uint_compressed_type>::value == std::alignment_of<exp_type>::value,
                   "Alignment must match!");
     static_assert(sizeof(uint_compressed_type) == sizeof(exp_type), "Sizes must match!");
+    static_assert(max_exp_block_size <= 32 && (max_exp_block_size & (max_exp_block_size - 1)) == 0,
+                  "Block size must be small enough for a warp!");
+    static_assert(
+      bits_per_value2 == bits_per_value,
+      "This template parameter only exists to allow for SFINAE. Please don't change the default value.");
+
+    // Internal assert: blockDim = integer * max_exp_block_size
+    assert((blockDim.x * blockDim.y * blockDim.z) % max_exp_block_size == 0);
+    assert((blockDim.x * blockDim.y * blockDim.z) == block_size);
+
+    // Necessary to separate it to have the __restrict__ working
+    uint_compressed_type* const __restrict__ compressed = compressed_;
+
+    constexpr exp_type min_exp_value{
+      std::numeric_limits<typename detail::fp::float_traits<fp_type>::exponent_t>::min()
+    };
+
+    auto subwarp =
+      cooperative_groups::tiled_partition<max_exp_block_size>(cooperative_groups::this_thread_block());
+    // local_idx is the index inside the compression block.
+
+    // find the max exponent in the block to determine the bias
+    const exp_type max_exp = device::reduce(
+      subwarp, detail::fp::exponent(fp_input_value), [](exp_type a, exp_type b) { return std::max(a, b); });
+
+    // preform the scaling
+    const auto mantissa_value = uint_fp_to_compressed(detail::fp::floating_to_fixed(fp_input_value, max_exp));
+
+    // at this point we have scaled values that we can encode
+    // compute the exp_block offset
+    // Note: Since exp_type and uint_compressed_type are required to have the same size and alignment, this
+    //       cast should be legal
+    const auto comp_block_idx = global_value_idx / max_exp_block_size;
+    const auto current_exponent_pointer =
+      reinterpret_cast<exp_type*>(compressed + comp_block_idx * compressed_block_size_element_count);
+    const auto compressed_output = compressed + comp_block_idx * compressed_block_size_element_count + 1;
+
+    if (global_value_idx < total_elements_) {
+      if (subwarp.thread_rank() == 0) {
+        *current_exponent_pointer = max_exp;
+      }
+      compressed_output[subwarp.thread_rank()] = mantissa_value;
+    }
+  }
+
+  template<int block_size, int bits_per_value2 = bits_per_value>
+  __device__ std::enable_if_t<uint_compressed_size_bit != bits_per_value2> compress_gpu_function(
+    const std::size_t global_value_idx,
+    const fp_type fp_input_value)
+  {
+    static_assert(std::alignment_of<uint_compressed_type>::value == std::alignment_of<exp_type>::value,
+                  "Alignment must match!");
+    static_assert(sizeof(uint_compressed_type) == sizeof(exp_type), "Sizes must match!");
+    static_assert(
+      bits_per_value2 == bits_per_value,
+      "This template parameter only exists to allow for SFINAE. Please don't change the default value.");
+
     // Internal assert: blockDim = integer * max_exp_block_size
     assert((blockDim.x * blockDim.y * blockDim.z) % max_exp_block_size == 0);
     assert((blockDim.x * blockDim.y * blockDim.z) == block_size);
