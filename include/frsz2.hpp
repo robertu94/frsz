@@ -548,7 +548,8 @@ struct frsz2_compressor
     return static_cast<uint_compressed_type>(val >> (sizeof(uint_fp_type) * CHAR_BIT - bits_per_value));
   }
 
-protected:
+// TODO maybe go back to protected:
+
   // This template argument is necessary in order to use SFINAE properly (otherwise, this results in a
   // compilation error)
   // TODO incorporate the shift and conversion to and from floating point in these functions
@@ -651,14 +652,25 @@ protected:
     // recover the scaled value
     const auto extracted_compressed_value = compressed[compressed_start_idx + 1 + local_idx];
 
-    // const auto output_val = detail::fp::fixed_to_floating<fp_type>(extracted_compressed_value, exponent);
+    return decompress_gpu_value(exponent, extracted_compressed_value);
+  }
+  
+  template<int bits_per_value2 = bits_per_value>
+  static constexpr __device__ std::enable_if_t<uint_compressed_size_bit == bits_per_value2, fp_type>
+  decompress_gpu_value(const exp_type exponent, const uint_compressed_type extracted_value)
+  {
+    static_assert(
+      bits_per_value2 == bits_per_value,
+      "This template parameter only exists to allow for SFINAE. Please don't change the default value.");
+
+    // const auto output_val = detail::fp::fixed_to_floating<fp_type>(extracted_value, exponent);
     // Perform all computations in the lower compressed_type to improve performance
     constexpr int significand_bits = detail::fp::float_traits<fp_type>::significand_bits;
     constexpr uint_compressed_type sign_mask = uint_compressed_type{ 1 } << (bits_per_value - 1);
     constexpr uint_fp_type significand_mask = (uint_fp_type{ 1 } << significand_bits) - 1;
-    const bool sign = extracted_compressed_value & sign_mask;
+    const bool sign = extracted_value & sign_mask;
     // Move the fraction bit all the way to the left (and remove the sign bit)
-    const uint_compressed_type fraction = extracted_compressed_value << 1;
+    const uint_compressed_type fraction = extracted_value << 1;
     const int leading_zeros = xstd::countl_zero(fraction);
     const int bias_exponent = std::max(0, exponent - leading_zeros + detail::fp::ebias_s<fp_type>::value);
     // +1 in order to remove the now implicit leading bit
